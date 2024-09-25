@@ -1,0 +1,10 @@
+mechanize
+beautifulsoup4
+pandas
+lxml
+openpyxl
+pytest
+requests
+google-cloud-bigquery
+pyarrow
+dataframe_image
