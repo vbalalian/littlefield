@@ -92,7 +92,7 @@ def csv_to_bucket(df:pd.DataFrame, bucket:str, filename:str='data.csv'):
 def excel_to_bucket(df:pd.DataFrame, bucket:str, filename:str='data.xlsx'):
     '''Saves Dataframe to excel in GCS bucket'''
     print(f'Writing {filename} to bucket {bucket}...')
-    with pd.ExcelWriter(filename, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer: 
+    with pd.ExcelWriter(f'gs://{bucket}/{filename}', engine='openpyxl', mode='a', if_sheet_exists='replace') as writer: 
         df.to_excel(writer, sheet_name='data')
     print('...complete.')
 
