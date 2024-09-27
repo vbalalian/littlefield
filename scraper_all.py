@@ -97,8 +97,8 @@ def excel_to_bucket(df:pd.DataFrame, bucket:str, filename:str='data.xlsx'):
 
 def load_to_bigquery(df:pd.DataFrame, project:str, dataset:str, table:str):
     '''Loads DataFrame into BigQuery table'''
-    print(f'Loading to BigQuery table:{table_id}')
     table_id = f'{project}.{dataset}.{table}'
+    print(f'Loading to BigQuery table:{table_id}')
     client = bigquery.Client()
     job_config = bigquery.LoadJobConfig(
         write_disposition = "WRITE_TRUNCATE"
