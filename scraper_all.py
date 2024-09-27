@@ -6,6 +6,7 @@ import http.cookiejar as cookielib
 import pandas as pd
 import dataframe_image as dfi
 import requests
+import json
 
 # Littlefield website info
 class_url = os.getenv('CLASS_URL')
@@ -82,16 +83,23 @@ def scrape_data(browser:mechanize.Browser) -> pd.DataFrame:
     df.index.name = 'DAY'
     return df
 
-def save_to_bucket(df:pd.DataFrame, bucket:str, filename:str):
+def csv_to_bucket(df:pd.DataFrame, bucket:str, filename:str='data.csv'):
     '''Saves DataFrame to csv in GCS bucket'''
     print(f'Saving CSV file {filename} to bucket {bucket}...')
     df.to_csv(f'gs://{bucket}/{filename}')
     print('...complete.')
 
+def excel_to_bucket(df:pd.DataFrame, bucket:str, filename:str='data.xlsx'):
+    '''Saves Dataframe to excel in GCS bucket'''
+    print(f'Writing {filename} to bucket {bucket}...')
+    with pd.ExcelWriter(filename, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer: 
+        df.to_excel(writer, sheet_name='data')
+    print('...complete.')
+
 def load_to_bigquery(df:pd.DataFrame, project:str, dataset:str, table:str):
     '''Loads DataFrame into BigQuery table'''
-    table_id = f'{project}.{dataset}.{table}'
     print(f'Loading to BigQuery table:{table_id}')
+    table_id = f'{project}.{dataset}.{table}'
     client = bigquery.Client()
     job_config = bigquery.LoadJobConfig(
         write_disposition = "WRITE_TRUNCATE"
@@ -100,21 +108,22 @@ def load_to_bigquery(df:pd.DataFrame, project:str, dataset:str, table:str):
     print('...complete.')
     return job.result()
 
-def daily_report(df:pd.DataFrame, team_name:str) -> pd.DataFrame:
+def daily_report(df:pd.DataFrame, team_name:str, average:int|None=None) -> pd.DataFrame:
     '''Transforms DataFrame into eye friendly report based on values dict'''
     present_day = df.index.max()
+    avg = average if average else 5
     report_df = pd.DataFrame({
         'Day':[present_day], 
         'Cash':[df.loc[present_day, 'CASH']],
         'Inventory':[df.loc[present_day, 'INV']],
         'Job Demand':[df.loc[present_day, 'JOBIN']],
-        'Avg Demand (5 day)':[df.loc[present_day-5:present_day, 'JOBIN'].mean()],
+        f'Avg ({avg}d) Job Demand':[df.loc[present_day-avg:present_day, 'JOBIN'].mean()],
         'Station 1 Util (%)':[df.loc[present_day, 'S1UTIL']*100],
-        'St 1 Avg(5) Util (%)':[df.loc[present_day-5:present_day, 'S1UTIL'].mean()*100],
+        f'Avg ({avg}d) St 1 Util (%)':[df.loc[present_day-avg:present_day, 'S1UTIL'].mean()*100],
         'Station 2 Util (%)':[df.loc[present_day, 'S2UTIL']*100],
-        'St 2 Avg(5) Util (%)':[df.loc[present_day-5:present_day, 'S2UTIL'].mean()*100],
+        f'Avg ({avg}d) St 2 Util (%)':[df.loc[present_day-avg:present_day, 'S2UTIL'].mean()*100],
         'Station 3 Util (%)':[df.loc[present_day, 'S3UTIL']*100],
-        'St 3 Avg(5) Util (%)':[df.loc[present_day-5:present_day, 'S3UTIL'].mean()*100],
+        f'Avg ({avg}d) St 3 Util (%)':[df.loc[present_day-avg:present_day, 'S3UTIL'].mean()*100],
         }, index=[team_name]).transpose()
     report_df = report_df.style.format(precision=0)
     return report_df
@@ -131,15 +140,30 @@ def post_report_to_discord(df:pd.DataFrame, discord_webhook:str, filename:str='c
     return response
 
 def main(request):
+    # Connect to Littlefield
     browser = Browser()
-    login(url=class_url, id=group_id, pw=group_pw, browser=browser)
-    data = scrape_data(browser=browser)
-    save_to_bucket(df=data, bucket=gcs_bucket, filename='data.csv')
-    load_to_bigquery(
-        df=data, project=project_id, dataset=dataset_name, table=bigquery_table
-        )
-    post_report_to_discord(daily_report(df=data, team_name=group_id), discord_webhook=webhook)
-    return 'Success', 200
+    login(class_url, group_id, group_pw, browser)
+
+    # Scrape Littlefield data
+    data = scrape_data(browser)
+
+    # Parse request parameters
+    request_json = request.get_json(silent=True)
+    if not request_json:
+        return 'Invalid JSON payload', 400
+
+    # Load data based on request parameters
+    actions = {
+        'csv': lambda: csv_to_bucket(data, gcs_bucket),
+        'excel': lambda: excel_to_bucket(data, gcs_bucket),
+        'bigquery': lambda: load_to_bigquery(data, project_id, dataset_name, bigquery_table),
+        'discord': lambda: post_report_to_discord(daily_report(data, group_id, request_json.get('avg')), webhook)
+    }
+    for key, action in actions.items():
+        if request_json.get(key):
+            action()
+
+    return 'OK', 200
 
 if __name__ == '__main__':
     main()
