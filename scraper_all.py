@@ -39,7 +39,7 @@ def login(url:str, id:str, pw:str, browser:mechanize.Browser):
     browser.submit()
 
 def scrape_data(browser:mechanize.Browser) -> pd.DataFrame:
-    '''Scrapes data from Littlefield categorical URLS, returns it as a DataFrame'''
+    '''Scrapes data from Littlefield categorical URLS, returns a DataFrame'''
     # Set variables
     url_list = ["INV", "AVGINV", "CASH","JOBIN", "JOBREJECTS", "JOBQ", "JOBWIP", "S1Q","S2Q","S3Q","S1UTIL","S2UTIL","S3UTIL"]
     url_list_4col = ["JOBT","JOBREV","JOBOUT"]
@@ -83,6 +83,32 @@ def scrape_data(browser:mechanize.Browser) -> pd.DataFrame:
     df.index.name = 'DAY'
     return df
 
+def scrape_standings(browser:mechanize.Browser) -> list[dict]:
+    '''Scrapes Littlefield team standings, returns a list of dicts'''
+    standings_url = 'https://op.responsive.net/Littlefield/Standing'
+    soup = BeautifulSoup(browser.open(standings_url), 'lxml')
+    table = soup.find('table', {'id': 'standingTable'})
+    rows = table.find('tbody').find_all('tr')
+    team_standings = []
+    for row in rows:
+        cols = row.find_all('td')
+        rank = cols[0].text.strip()
+        team_name = cols[1].text.strip()
+        cash_balance = cols[2].text.strip()
+        team_standings.append({
+            'rank': rank, 
+            'team': team_name, 
+            'cash_balance': cash_balance
+        })
+    return team_standings
+
+def get_team_info(standings:list[dict], team_name:str=group_id):
+    '''Returns rank, team name, and cash balance of specified team from standings'''
+    for team in standings:
+        if team['team'].lower() == team_name.lower():
+            return team
+    return None
+
 def csv_to_bucket(df:pd.DataFrame, bucket:str, filename:str='data.csv'):
     '''Saves DataFrame to csv in GCS bucket'''
     print(f'Saving CSV file {filename} to bucket {bucket}...')
@@ -98,6 +124,7 @@ def excel_to_bucket(df:pd.DataFrame, bucket:str, filename:str='data.xlsx'):
 def load_to_bigquery(df:pd.DataFrame, project:str, dataset:str, table:str):
     '''Loads DataFrame into BigQuery table'''
     table_id = f'{project}.{dataset}.{table}'
+    table_id = f'{project}.{dataset}.{table}'
     print(f'Loading to BigQuery table:{table_id}')
     client = bigquery.Client()
     job_config = bigquery.LoadJobConfig(
@@ -107,12 +134,14 @@ def load_to_bigquery(df:pd.DataFrame, project:str, dataset:str, table:str):
     print('...complete.')
     return job.result()
 
-def daily_report(df:pd.DataFrame, team_name:str, average:int|None=None) -> pd.DataFrame:
+def daily_report(df:pd.DataFrame, team_name:str, rank:int|None=None, average:int|None=None) -> pd.DataFrame:
     '''Transforms DataFrame into eye friendly report based on values dict'''
     present_day = df.index.max()
     avg = average if average else 5
+    rank = rank if rank else 'na'
     report_df = pd.DataFrame({
-        'Day':[present_day], 
+        'Day':[present_day],
+        'Rank': [rank], 
         'Cash':[df.loc[present_day, 'CASH']],
         'Inventory':[df.loc[present_day, 'INV']],
         'Job Demand':[df.loc[present_day, 'JOBIN']],
@@ -145,6 +174,8 @@ def main(request):
 
     # Scrape Littlefield data
     data = scrape_data(browser)
+    standings = scrape_standings(browser)
+    rank = get_team_info(standings, group_id)['rank']
 
     # Parse request parameters
     request_json = request.get_json(silent=True)
@@ -155,8 +186,12 @@ def main(request):
     actions = {
         'csv': lambda: csv_to_bucket(data, gcs_bucket),
         'excel': lambda: excel_to_bucket(data, gcs_bucket),
-        'bigquery': lambda: load_to_bigquery(data, project_id, dataset_name, bigquery_table),
-        'discord': lambda: post_report_to_discord(daily_report(data, group_id, request_json.get('avg')), webhook)
+        'bigquery': lambda: load_to_bigquery(
+            data, project_id, dataset_name, bigquery_table
+            ),
+        'discord': lambda: post_report_to_discord(
+            daily_report(data, group_id, rank, request_json.get('avg')), webhook
+            )
     }
     for key, action in actions.items():
         if request_json.get(key):
