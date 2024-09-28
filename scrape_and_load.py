@@ -41,28 +41,28 @@ def login(url:str, id:str, pw:str, browser:mechanize.Browser):
 def scrape_data(browser:mechanize.Browser) -> pd.DataFrame:
     '''Scrapes data from Littlefield categorical URLS, returns a DataFrame'''
     # Set variables
-    url_list = ["INV", "AVGINV", "CASH","JOBIN", "JOBREJECTS", "JOBQ", "JOBWIP", "S1Q","S2Q","S3Q","S1UTIL","S2UTIL","S3UTIL"]
-    url_list_4col = ["JOBT","JOBREV","JOBOUT"]
-    LF_DATA = {}
+    simple_categories = ["INV", "AVGINV", "CASH","JOBIN", "JOBREJECTS", "JOBQ", "JOBWIP", "S1Q","S2Q","S3Q","S1UTIL","S2UTIL","S3UTIL"]
+    contract_categories = ["JOBT","JOBREV","JOBOUT"]
+    data = {}
 
-    # Scrape url_list
-    for url in url_list:
-        print(f'Scraping {url}')
-        lf_url = "http://op.responsive.net/Littlefield/Plot?data=%s&x=all" % url
-        soup = BeautifulSoup(browser.open(lf_url), "lxml")
+    # Scrape simple_categories
+    for cat in simple_categories:
+        print(f'Scraping {cat}')
+        url = "http://op.responsive.net/Littlefield/Plot?data=%s&x=all" % cat
+        soup = BeautifulSoup(browser.open(url), "lxml")
         data = soup.find_all("script")[6].string
         data = data.split("\n")[4].split("'")[3].split()
         values = []
         for i in range(len(data)):
             if i % 2 == 0 and "." not in data[i]:
                 values.append(data[i+1])
-        LF_DATA[url] = values
+        data[cat] = values
 
-    # Scrape url_list_4col
-    for url in url_list_4col:
-        print(f'Scraping {url}')
-        lf_url = "http://op.responsive.net/Littlefield/Plot?data=%s&x=all" % url
-        soup = BeautifulSoup(browser.open(lf_url), "lxml")
+    # Scrape contract_categories
+    for cat in contract_categories:
+        print(f'Scraping {cat}')
+        url = "http://op.responsive.net/Littlefield/Plot?data=%s&x=all" % cat
+        soup = BeautifulSoup(browser.open(url), "lxml")
         data = soup.find_all("script")[6].string
         for i in range(3):
             try:
@@ -71,14 +71,14 @@ def scrape_data(browser:mechanize.Browser) -> pd.DataFrame:
                 for j in range(len(data)):
                     if j % 2 == 0 and "." not in data[j]:
                         values.append(data[j+1])
-                LF_DATA[url+str(i+1)] = values
+                data[cat+str(i+1)] = values
             except:
                 # Fill Contract 2 and 3 columns with 0s
-                values = [0 for _ in range(len(LF_DATA['INV']))]
-                LF_DATA[url+str(i+1)] = values
+                values = [0 for _ in range(len(data['INV']))]
+                data[cat+str(i+1)] = values
                 continue
 
-    df = pd.DataFrame(LF_DATA, dtype=float)
+    df = pd.DataFrame(data, dtype=float)
     df.index += 1
     df.index.name = 'DAY'
     return df
