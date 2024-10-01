@@ -44,7 +44,7 @@ def scrape_data(browser:mechanize.Browser) -> pd.DataFrame:
     # Set variables
     simple_categories = ["INV", "AVGINV", "CASH","JOBIN", "JOBREJECTS", "JOBQ", "JOBWIP", "S1Q","S2Q","S3Q","S1UTIL","S2UTIL","S3UTIL"]
     contract_categories = ["JOBT","JOBREV","JOBOUT"]
-    data = {}
+    dataset = {}
 
     # Scrape simple_categories
     for cat in simple_categories:
@@ -57,7 +57,7 @@ def scrape_data(browser:mechanize.Browser) -> pd.DataFrame:
         for i in range(len(data)):
             if i % 2 == 0 and "." not in data[i]:
                 values.append(data[i+1])
-        data[cat] = values
+        dataset[cat] = values
 
     # Scrape contract_categories
     for cat in contract_categories:
@@ -72,14 +72,14 @@ def scrape_data(browser:mechanize.Browser) -> pd.DataFrame:
                 for j in range(len(data)):
                     if j % 2 == 0 and "." not in data[j]:
                         values.append(data[j+1])
-                data[cat+str(i+1)] = values
+                dataset[cat+str(i+1)] = values
             except:
                 # Fill unused Contract 2/3 columns with NaNs
-                values = [np.nan for _ in range(len(data['INV']))]
-                data[cat+str(i+1)] = values
+                values = [np.nan for _ in range(len(dataset['INV']))]
+                dataset[cat+str(i+1)] = values
                 continue
 
-    df = pd.DataFrame(data, dtype=float)
+    df = pd.DataFrame(dataset, dtype=float)
     df.index += 1
     df.index.name = 'DAY'
     return df
