@@ -4,6 +4,7 @@ from google.cloud import bigquery
 from bs4 import BeautifulSoup
 import http.cookiejar as cookielib
 import pandas as pd
+import numpy as np
 import dataframe_image as dfi
 import requests
 import json
@@ -73,8 +74,8 @@ def scrape_data(browser:mechanize.Browser) -> pd.DataFrame:
                         values.append(data[j+1])
                 data[cat+str(i+1)] = values
             except:
-                # Fill Contract 2 and 3 columns with 0s
-                values = [0 for _ in range(len(data['INV']))]
+                # Fill unused Contract 2/3 columns with NaNs
+                values = [np.nan for _ in range(len(data['INV']))]
                 data[cat+str(i+1)] = values
                 continue
 
