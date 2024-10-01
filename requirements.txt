@@ -1,6 +1,7 @@
 mechanize
 beautifulsoup4
 pandas
+numpy
 lxml
 openpyxl
 pytest
