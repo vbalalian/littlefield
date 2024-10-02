@@ -20,11 +20,10 @@
 Step 1: Create a Google Cloud Function (1st gen) with an HTTP trigger, with the following runtime environment variables:
 - GROUP_ID: Group/team name
 - GROUP_PW: Group/team password
+- CLASS_URL: Littlefield login page url
 - PROJECT_ID: Google Cloud Project ID
 - DATASET_NAME: Google BigQuery Dataset name
-- TABLE_NAME: Google BigQuery Table name
 - GCS_BUCKET: Google Cloud Storage bucket name
-- CLASS_URL: Littlefield login page url
 - DISCORD_WEBHOOK: Discord webhook url
 
 Step 2: Set runtime to **Python 3.11+** and entry point to **main**
@@ -47,7 +46,8 @@ Step 4: Copy the following into the body ('avg' = desired period count for disco
 {
   "csv": true,
   "excel": true,
-  "bigquery": true,
+  "bq_factory": true,
+  "bq_standings": true,
   "discord": true,
   "avg": 5
 }

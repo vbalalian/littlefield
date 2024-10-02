@@ -17,9 +17,9 @@ group_pw = os.getenv('GROUP_PW')
 # Google Cloud project info
 project_id = os.getenv('PROJECT_ID')
 dataset_name = os.getenv('DATASET_NAME')
-operations_table = os.getenv('TABLE_NAME')
-standings_table = 'raw_standings'
 gcs_bucket = os.getenv('GCS_BUCKET')
+factory_table = 'raw_factory'
+standings_table = 'raw_standings'
 
 # Discord webhook
 webhook = os.getenv('DISCORD_WEBHOOK')
@@ -82,6 +82,8 @@ def scrape_data(browser:mechanize.Browser) -> pd.DataFrame:
 
     df = pd.DataFrame(dataset, dtype=float)
     df['DAY'] = df.index+1
+    # Move 'DAY' to front
+    df = df[ ['DAY'] + [ col for col in df.columns if col != 'DAY' ] ]
     df.index += 1
     return df
 
@@ -185,7 +187,7 @@ def main(request):
     login(class_url, group_id, group_pw, browser)
 
     # Scrape Littlefield data
-    factory_data = scrape_data(browser)
+    factory_df = scrape_data(browser)
     standings = scrape_standings(browser)
     rank = get_team_info(standings, group_id)['RANK']
     standings_df = pd.DataFrame(standings)
@@ -197,16 +199,16 @@ def main(request):
 
     # Load data based on request parameters
     actions = {
-        'csv': lambda: csv_to_bucket(factory_data, gcs_bucket),
-        'excel': lambda: excel_to_bucket(factory_data, gcs_bucket),
+        'csv': lambda: csv_to_bucket(factory_df, gcs_bucket),
+        'excel': lambda: excel_to_bucket(factory_df, gcs_bucket),
         'bq_factory': lambda: load_to_bigquery(
-            factory_data, project_id, dataset_name, operations_table
+            factory_df, project_id, dataset_name, factory_table
         ),
         'bq_standings': lambda: load_to_bigquery(
             standings_df, project_id, dataset_name, standings_table
         ),
         'discord': lambda: post_report_to_discord(
-            daily_report(factory_data, group_id, rank, request_json.get('avg')), webhook
+            daily_report(factory_df, group_id, rank, request_json.get('avg')), webhook
             )
     }
     for key, action in actions.items():
