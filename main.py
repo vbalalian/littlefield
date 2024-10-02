@@ -17,7 +17,8 @@ group_pw = os.getenv('GROUP_PW')
 # Google Cloud project info
 project_id = os.getenv('PROJECT_ID')
 dataset_name = os.getenv('DATASET_NAME')
-bigquery_table = os.getenv('TABLE_NAME')
+operations_table = os.getenv('TABLE_NAME')
+standings_table = 'raw_standings'
 gcs_bucket = os.getenv('GCS_BUCKET')
 
 # Discord webhook
@@ -80,33 +81,36 @@ def scrape_data(browser:mechanize.Browser) -> pd.DataFrame:
                 continue
 
     df = pd.DataFrame(dataset, dtype=float)
+    df['DAY'] = df.index+1
     df.index += 1
-    df.index.name = 'DAY'
     return df
 
 def scrape_standings(browser:mechanize.Browser) -> list[dict]:
-    '''Scrapes Littlefield team standings, returns a list of dicts'''
     standings_url = 'https://op.responsive.net/Littlefield/Standing'
-    soup = BeautifulSoup(browser.open(standings_url), 'lxml')
-    table = soup.find('table', {'id': 'standingTable'})
+    status_url = 'http://op.responsive.net/Littlefield/LTStatus'
+    standings_soup = BeautifulSoup(browser.open(standings_url), 'lxml')
+    status_soup = BeautifulSoup(browser.open(status_url), 'lxml')
+    table = standings_soup.find('table', {'id': 'standingTable'})
     rows = table.find('tbody').find_all('tr')
     team_standings = []
+    day = status_soup.find_all('b')[0].next_sibling.strip()
+
     for row in rows:
         cols = row.find_all('td')
         rank = cols[0].text.strip()
         team_name = cols[1].text.strip()
         cash_balance = cols[2].text.strip()
         team_standings.append({
-            'rank': rank, 
-            'team': team_name, 
-            'cash_balance': cash_balance
+            'DAY': int(day),
+            'RANK': int(rank), 
+            'TEAM': str(team_name), 
+            'CASH_BALANCE': float(cash_balance.replace(',',''))
         })
     return team_standings
 
 def get_team_info(standings:list[dict], team_name:str=group_id):
-    '''Returns rank, team name, and cash balance of specified team from standings'''
     for team in standings:
-        if team['team'].lower() == team_name.lower():
+        if team['TEAM'].lower() == team_name.lower():
             return team
     return None
 
@@ -125,19 +129,26 @@ def excel_to_bucket(df:pd.DataFrame, bucket:str, filename:str='data.xlsx'):
 def load_to_bigquery(df:pd.DataFrame, project:str, dataset:str, table:str):
     '''Loads DataFrame into BigQuery table'''
     table_id = f'{project}.{dataset}.{table}'
-    table_id = f'{project}.{dataset}.{table}'
     print(f'Loading to BigQuery table:{table_id}')
     client = bigquery.Client()
-    job_config = bigquery.LoadJobConfig(
-        write_disposition = "WRITE_TRUNCATE"
-    )
-    job = client.load_table_from_dataframe(df, table_id, job_config=job_config)
-    print('...complete.')
-    return job.result()
+    try:
+        query = f'SELECT * FROM {table_id};'
+        job = client.query(query)
+        result = job.result()
+        existing_records = {row.DAY for row in result}
+        new_records_df = df[df['DAY'].apply(lambda x: x not in existing_records)]
+        job_config = bigquery.LoadJobConfig(write_disposition = "WRITE_APPEND")
+        job = client.load_table_from_dataframe(new_records_df, table_id, job_config=job_config)
+        result = job.result()
+    except:
+        job_config = bigquery.LoadJobConfig(write_disposition = "WRITE_TRUNCATE")
+        job = client.load_table_from_dataframe(df, table_id, job_config=job_config)
+        result = job.result()
+    print(f'Loaded {job.output_rows} rows into {table_id}.')
 
 def daily_report(df:pd.DataFrame, team_name:str, rank:int|None=None, average:int|None=None) -> pd.DataFrame:
     '''Transforms DataFrame into eye friendly report based on values dict'''
-    present_day = df.index.max()
+    present_day = df['DAY'].max()
     avg = average if average else 5
     rank = rank if rank else 'na'
     report_df = pd.DataFrame({
@@ -174,9 +185,10 @@ def main(request):
     login(class_url, group_id, group_pw, browser)
 
     # Scrape Littlefield data
-    data = scrape_data(browser)
+    factory_data = scrape_data(browser)
     standings = scrape_standings(browser)
-    rank = get_team_info(standings, group_id)['rank']
+    rank = get_team_info(standings, group_id)['RANK']
+    standings_df = pd.DataFrame(standings)
 
     # Parse request parameters
     request_json = request.get_json(silent=True)
@@ -185,13 +197,16 @@ def main(request):
 
     # Load data based on request parameters
     actions = {
-        'csv': lambda: csv_to_bucket(data, gcs_bucket),
-        'excel': lambda: excel_to_bucket(data, gcs_bucket),
-        'bigquery': lambda: load_to_bigquery(
-            data, project_id, dataset_name, bigquery_table
-            ),
+        'csv': lambda: csv_to_bucket(factory_data, gcs_bucket),
+        'excel': lambda: excel_to_bucket(factory_data, gcs_bucket),
+        'bq_factory': lambda: load_to_bigquery(
+            factory_data, project_id, dataset_name, operations_table
+        ),
+        'bq_standings': lambda: load_to_bigquery(
+            standings_df, project_id, dataset_name, standings_table
+        ),
         'discord': lambda: post_report_to_discord(
-            daily_report(data, group_id, rank, request_json.get('avg')), webhook
+            daily_report(factory_data, group_id, rank, request_json.get('avg')), webhook
             )
     }
     for key, action in actions.items():
