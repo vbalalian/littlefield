@@ -20,6 +20,7 @@ dataset_name = os.getenv('DATASET_NAME')
 gcs_bucket = os.getenv('GCS_BUCKET')
 factory_table = 'raw_factory'
 standings_table = 'raw_standings'
+settings_table = 'raw_settings'
 
 # Discord webhook
 webhook = os.getenv('DISCORD_WEBHOOK')
@@ -40,7 +41,13 @@ def login(url:str, id:str, pw:str, browser:mechanize.Browser):
     browser.form['password'] = pw
     browser.submit()
 
-def scrape_data(browser:mechanize.Browser) -> pd.DataFrame:
+def scrape_current_day(browser:mechanize.Browser) -> int:
+    status_url = 'http://op.responsive.net/Littlefield/LTStatus'
+    status_soup = BeautifulSoup(browser.open(status_url), 'lxml')
+    day = status_soup.find_all('b')[0].next_sibling.strip()
+    return int(day)
+
+def scrape_full_data(browser:mechanize.Browser) -> pd.DataFrame:
     '''Scrapes data from Littlefield categorical URLS, returns a DataFrame'''
     # Set variables
     simple_categories = ["INV", "AVGINV", "CASH","JOBIN", "JOBREJECTS", "JOBQ", "JOBWIP", "S1Q","S2Q","S3Q","S1UTIL","S2UTIL","S3UTIL"]
@@ -87,34 +94,77 @@ def scrape_data(browser:mechanize.Browser) -> pd.DataFrame:
     df.index += 1
     return df
 
-def scrape_standings(browser:mechanize.Browser) -> list[dict]:
+def scrape_current_standings(browser:mechanize.Browser, current_day:int) -> pd.DataFrame: ################### ADD TO MAIN
     standings_url = 'https://op.responsive.net/Littlefield/Standing'
-    status_url = 'http://op.responsive.net/Littlefield/LTStatus'
     standings_soup = BeautifulSoup(browser.open(standings_url), 'lxml')
-    status_soup = BeautifulSoup(browser.open(status_url), 'lxml')
     table = standings_soup.find('table', {'id': 'standingTable'})
     rows = table.find('tbody').find_all('tr')
     team_standings = []
-    day = status_soup.find_all('b')[0].next_sibling.strip()
-
     for row in rows:
         cols = row.find_all('td')
         rank = cols[0].text.strip()
         team_name = cols[1].text.strip()
         cash_balance = cols[2].text.strip()
         team_standings.append({
-            'DAY': int(day),
+            'DAY': current_day,
             'RANK': int(rank), 
             'TEAM': str(team_name), 
             'CASH_BALANCE': float(cash_balance.replace(',',''))
         })
-    return team_standings
 
-def get_team_info(standings:list[dict], team_name:str=group_id):
-    for team in standings:
-        if team['TEAM'].lower() == team_name.lower():
-            return team
-    return None
+    standings_df = pd.DataFrame(team_standings)    
+    return standings_df
+
+def scrape_daily_settings(browser:mechanize.Browser, current_day:int) -> pd.DataFrame:
+    dataset = {'DAY': current_day}
+
+    # Scrape station settings
+    for station_no in range(1, 4):
+        url = 'https://op.responsive.net/Littlefield/StationMenu?id=%s' % station_no
+        soup = BeautifulSoup(browser.open(url))
+        values = []
+        for row in soup.find_all('b')[1:5]:
+            values.append(row.next_sibling.strip())
+        dataset[f'S{station_no}_machines'] = int(values[0])
+        dataset[f'S{station_no}_sch_policy'] = values[1]
+        dataset[f'S{station_no}_pur_price'] = float(values[2].replace('$', '').replace(',', '').strip())
+        dataset[f'S{station_no}_ret_price'] = float(values[3].replace('$', '').replace(',', '').strip())
+
+    # Scrape orders menu
+    url = 'https://op.responsive.net/Littlefield/OrdersMenu'
+    soup = BeautifulSoup(browser.open(url))
+    values = []
+    for row in soup.find_all('b')[1:5]:
+        values.append(row.next_sibling.split()[0].strip())
+    for row in soup.find_all('dd')[:3]:
+        values.append(row.contents[0].split()[3])
+    dataset['max_wip'] = int(values[0])
+    dataset['kits_per_job'] = int(values[1])
+    dataset['lot_size'] = int(values[2])
+    dataset['current_contract'] = int(values[3])
+    dataset['quoted_lead_time'] = float(values[4])
+    dataset['max_lead_time'] = float(values[5])
+    dataset['rev_per_order'] = float(values[6])
+    
+    # Scrape materials menu
+    url = 'https://op.responsive.net/Littlefield/MaterialMenu'
+    soup = BeautifulSoup(browser.open(url))
+    values = []
+    for row in soup.find_all('b')[1:6]:
+        values.append(row.next_sibling.replace('$','').replace(',','').split()[0].strip())
+    dataset['unit_cost'] = float(values[0])
+    dataset['order_cost'] = float(values[1])
+    dataset['lead_time'] = float(values[2])
+    dataset['reorder_point'] = float(values[3])
+    dataset['order_quantity'] = float(values[4])
+
+    return pd.DataFrame(dataset, index=[current_day])
+
+def get_team_info(standings:pd.DataFrame, team_name:str=group_id): ################### ADD TO MAIN
+    teams_list = standings['TEAM'].str.lower().values
+    if team_name.lower() in teams_list:
+        return standings[standings['TEAM'].str.lower() == team_name.lower()].to_dict('records')[0]
+    return {}
 
 def csv_to_bucket(df:pd.DataFrame, bucket:str, filename:str='data.csv'):
     '''Saves DataFrame to csv in GCS bucket'''
@@ -187,10 +237,11 @@ def main(request):
     login(class_url, group_id, group_pw, browser)
 
     # Scrape Littlefield data
-    factory_df = scrape_data(browser)
-    standings = scrape_standings(browser)
-    rank = get_team_info(standings, group_id)['RANK']
-    standings_df = pd.DataFrame(standings)
+    current_day = scrape_current_day(browser)
+    factory_df = scrape_full_data(browser)
+    standings_df = scrape_current_standings(browser, current_day)
+    daily_settings_df = scrape_daily_settings(browser, current_day)
+    rank = get_team_info(standings_df, group_id)['RANK']
 
     # Parse request parameters
     request_json = request.get_json(silent=True)
@@ -206,6 +257,9 @@ def main(request):
         ),
         'bq_standings': lambda: load_to_bigquery(
             standings_df, project_id, dataset_name, standings_table
+        ),
+        'bq_settings': lambda: load_to_bigquery(
+            daily_settings_df, project_id, dataset_name, settings_table
         ),
         'discord': lambda: post_report_to_discord(
             daily_report(factory_df, group_id, rank, request_json.get('avg')), webhook
