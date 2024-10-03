@@ -121,7 +121,7 @@ def scrape_daily_settings(browser:mechanize.Browser, current_day:int) -> pd.Data
     # Scrape station settings
     for station_no in range(1, 4):
         url = 'https://op.responsive.net/Littlefield/StationMenu?id=%s' % station_no
-        soup = BeautifulSoup(browser.open(url))
+        soup = BeautifulSoup(browser.open(url), 'lxml')
         values = []
         for row in soup.find_all('b')[1:5]:
             values.append(row.next_sibling.strip())
@@ -132,7 +132,7 @@ def scrape_daily_settings(browser:mechanize.Browser, current_day:int) -> pd.Data
 
     # Scrape orders menu
     url = 'https://op.responsive.net/Littlefield/OrdersMenu'
-    soup = BeautifulSoup(browser.open(url))
+    soup = BeautifulSoup(browser.open(url), 'lxml')
     values = []
     for row in soup.find_all('b')[1:5]:
         values.append(row.next_sibling.split()[0].strip())
@@ -148,7 +148,7 @@ def scrape_daily_settings(browser:mechanize.Browser, current_day:int) -> pd.Data
     
     # Scrape materials menu
     url = 'https://op.responsive.net/Littlefield/MaterialMenu'
-    soup = BeautifulSoup(browser.open(url))
+    soup = BeautifulSoup(browser.open(url), 'lxml')
     values = []
     for row in soup.find_all('b')[1:6]:
         values.append(row.next_sibling.replace('$','').replace(',','').split()[0].strip())
