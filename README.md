@@ -10,9 +10,9 @@
 
 ## Requirements:
 - Existing Google Cloud Project
-- Existing Google BigQuery dataset and table (optional)
-- Existing Google Cloud Storage bucket (optional)
-- Existing Discord Webhook (optional)
+- Existing Google BigQuery dataset
+- Existing Google Cloud Storage bucket
+- Existing Discord Webhook
 
 ## To Run:
 
@@ -48,6 +48,7 @@ Step 4: Copy the following into the body ('avg' = desired period count for disco
   "excel": true,
   "bq_factory": true,
   "bq_standings": true,
+  "bq_settings": true,
   "discord": true,
   "avg": 5
 }
@@ -57,7 +58,7 @@ Step 5: Adjust the parameters based on desired usage
 
 Step 6: Create the job
 
-# Success!
+## Success!
 ...hopefully. Please let me know if you have any issues.
 
 
