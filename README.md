@@ -44,12 +44,13 @@ Step 3: Set the Target type to **HTTP** and copy the **Trigger URL** as the exec
 Step 4: Copy the following into the body ('avg' = desired period count for discord report moving averages)
 ```
 {
-  "csv": true,
-  "excel": true,
+  "csv_to_bucket": true,
+  "excel_to_bucket": true,
   "bq_factory": true,
   "bq_standings": true,
   "bq_settings": true,
-  "discord": true,
+  "discord_report": true,
+  "discord_excel": true,
   "avg": 5
 }
 ```

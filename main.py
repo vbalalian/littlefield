@@ -175,7 +175,7 @@ def csv_to_bucket(df:pd.DataFrame, bucket:str, filename:str='data.csv'):
 def excel_to_bucket(df:pd.DataFrame, bucket:str, filename:str='data.xlsx'):
     '''Saves Dataframe to excel in GCS bucket'''
     print(f'Writing {filename} to bucket {bucket}...')
-    df.to_excel(f'gs://{bucket}/{filename}')
+    df.to_excel(f'gs://{bucket}/{filename}', index=False)
     print('...complete.')
 
 def load_to_bigquery(df:pd.DataFrame, project:str, dataset:str, table:str):
@@ -230,6 +230,17 @@ def post_report_to_discord(df:pd.DataFrame, discord_webhook:str, filename:str='c
                 files={filename: image})
     print('...complete.')
     return response
+    
+def post_excel_to_discord(df:pd.DataFrame, discord_webhook:str, filename:str='data.xlsx') -> requests.Response:
+    '''Posts excel file to Discord webhook, returns requests.Response'''
+    print('Posting excel file to Discord...')
+    temp_file = '/tmp/' + filename
+    df.to_excel(temp_file, index=False)
+    with open(temp_file, 'rb') as file:
+        response = requests.post(discord_webhook,
+                files={filename: file})
+    print('...complete.')
+    return response
 
 def main(request):
     # Connect to Littlefield
@@ -250,8 +261,8 @@ def main(request):
 
     # Load data based on request parameters
     actions = {
-        'csv': lambda: csv_to_bucket(factory_df, gcs_bucket),
-        'excel': lambda: excel_to_bucket(factory_df, gcs_bucket),
+        'csv_to_bucket': lambda: csv_to_bucket(factory_df, gcs_bucket),
+        'excel_to_bucket': lambda: excel_to_bucket(factory_df, gcs_bucket),
         'bq_factory': lambda: load_to_bigquery(
             factory_df, project_id, dataset_name, factory_table
         ),
@@ -261,9 +272,10 @@ def main(request):
         'bq_settings': lambda: load_to_bigquery(
             daily_settings_df, project_id, dataset_name, settings_table
         ),
-        'discord': lambda: post_report_to_discord(
+        'discord_report': lambda: post_report_to_discord(
             daily_report(factory_df, group_id, rank, request_json.get('avg')), webhook
-            )
+        ),
+        'discord_excel': lambda: post_excel_to_discord(factory_df, webhook)
     }
     for key, action in actions.items():
         if request_json.get(key):
