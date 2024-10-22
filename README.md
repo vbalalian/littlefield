@@ -46,10 +46,12 @@ Step 4: Copy the following into the body ('avg' = desired period count for disco
 {
   "csv_to_bucket": true,
   "excel_to_bucket": true,
-  "bq_factory": true,
-  "bq_standings": true,
-  "bq_settings": true,
+  "bigquery_factory": true,
+  "bigquery_standings": true,
+  "bigquery_settings": true,
   "discord_report": true,
+  "discord_demand_chart": true,
+  "discord_util_chart": true,
   "discord_excel": true,
   "avg": 5
 }

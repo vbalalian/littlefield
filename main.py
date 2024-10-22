@@ -6,6 +6,7 @@ import http.cookiejar as cookielib
 import pandas as pd
 import numpy as np
 import dataframe_image as dfi
+import matplotlib.pyplot as plt
 import requests
 import json
 
@@ -160,7 +161,7 @@ def scrape_daily_settings(browser:mechanize.Browser, current_day:int) -> pd.Data
 
     return pd.DataFrame(dataset, index=[current_day])
 
-def get_team_info(standings:pd.DataFrame, team_name:str=group_id): ################### ADD TO MAIN
+def scrape_team_info(standings:pd.DataFrame, team_name:str=group_id):
     teams_list = standings['TEAM'].str.lower().values
     if team_name.lower() in teams_list:
         return standings[standings['TEAM'].str.lower() == team_name.lower()].to_dict('records')[0]
@@ -210,31 +211,100 @@ def daily_report(df:pd.DataFrame, team_name:str, rank:int|None=None, average:int
         'Inventory':[df.loc[present_day, 'INV']],
         'Job Demand':[df.loc[present_day, 'JOBIN']],
         f'Avg ({avg}d) Job Demand':[df.loc[present_day-avg:present_day, 'JOBIN'].mean()],
-        'Station 1 Util (%)':[df.loc[present_day, 'S1UTIL']*100],
-        f'Avg ({avg}d) St 1 Util (%)':[df.loc[present_day-avg:present_day, 'S1UTIL'].mean()*100],
-        'Station 2 Util (%)':[df.loc[present_day, 'S2UTIL']*100],
-        f'Avg ({avg}d) St 2 Util (%)':[df.loc[present_day-avg:present_day, 'S2UTIL'].mean()*100],
-        'Station 3 Util (%)':[df.loc[present_day, 'S3UTIL']*100],
-        f'Avg ({avg}d) St 3 Util (%)':[df.loc[present_day-avg:present_day, 'S3UTIL'].mean()*100],
+        'Station 1 Util':f"{round(df.loc[present_day, 'S1UTIL']*100)} %",
+        f'Avg ({avg}d) St 1 Util':f"{round(df.loc[present_day-avg:present_day, 'S1UTIL'].mean()*100)} %",
+        'Station 2 Util':f"{round(df.loc[present_day, 'S2UTIL']*100)} %",
+        f'Avg ({avg}d) St 2 Util':f"{round(df.loc[present_day-avg:present_day, 'S2UTIL'].mean()*100)} %",
+        'Station 3 Util':f"{round(df.loc[present_day, 'S3UTIL']*100)} %",
+        f'Avg ({avg}d) St 3 Util':f"{round(df.loc[present_day-avg:present_day, 'S3UTIL'].mean()*100)} %",
         }, index=[team_name]).transpose()
     report_df = report_df.style.format(precision=0)
     return report_df
 
-def post_report_to_discord(df:pd.DataFrame, discord_webhook:str, filename:str='chart.png', font_size:int=10) -> requests.Response:
-    '''Posts image to Discord webhook, returns requests.Response'''
+def post_report_to_discord(df:pd.DataFrame, discord_webhook:str, current_day:int|None=None, font_size:int=10) -> requests.Response:
+    '''Posts report image to Discord webhook, returns requests.Response'''
     print('Posting report image to Discord...')
-    temp_file = '/tmp/' + filename
+    filename = f'day{current_day}-report' if current_day else 'report'
+    temp_file = '/tmp/' + filename + '.png'
     dfi.export(df, filename=temp_file, table_conversion='matplotlib', fontsize=font_size)
     with open(temp_file, 'rb') as image:
         response = requests.post(discord_webhook,
                 files={filename: image})
     print('...complete.')
     return response
+
+def post_demand_chart_to_discord(df:pd.DataFrame, discord_webhook:str, current_day:int|None=None) -> requests.Response:
+    '''Posts job demand chart to Discord webhook, returns requests.Response'''
+    print('Posting job demand chart to Discord...')
+    filename = f'day{current_day}-demand-chart' if current_day else 'demand-chart'
+    temp_file = '/tmp/' + filename + '.png'
+
+    # Plot jobs in
+    plt.figure(figsize=(5, 2.7), layout='constrained')
+    plt.grid(True)
+    plt.plot(df['DAY'], df['JOBIN'], linewidth=2)
+
+    # Add trendline with standard deviation
+    z = np.polyfit(df['DAY'], df['JOBIN'], 1)
+    p = np.poly1d(z)
+    x = range(1, df['DAY'].max()+22)
+    std_dev = np.std(df['JOBIN'])
+    plt.plot(x, p(x), color="red", linestyle="--")
+    plt.fill_between(x, p(x) - std_dev, p(x) + std_dev, alpha=0.3)
+
+    # Add station capacities
+    df['JOBOUT'] = df['JOBOUT1'].combine_first(df['JOBOUT2']).combine_first(df['JOBOUT3'])
+    print(df['JOBOUT'].mean())
+    avg_jobs_out = df['JOBOUT'].mean()
+    avg_s1_util = df['S1UTIL'].mean()
+    avg_s2_util = df['S2UTIL'].mean()
+    avg_s3_util = df['S3UTIL'].mean()
+    s1_capacity = avg_jobs_out/avg_s1_util
+    s2_capacity = avg_jobs_out/avg_s2_util
+    s3_capacity = avg_jobs_out/avg_s3_util
+    plt.axhline(y=s1_capacity, color='black', linestyle='--', label='S1CAPACITY')
+    plt.axhline(y=s2_capacity, color='gray', linestyle='--', label='S2CAPACITY')
+    plt.axhline(y=s3_capacity, color='silver', linestyle='--', label='S3CAPACITY')
+    plt.text(0, s1_capacity+.1, 'S1CAPACITY', fontsize=6)
+    plt.text(0, s2_capacity+.1, 'S2CAPACITY', fontsize=6)
+    plt.text(0, s3_capacity+.1, 'S3CAPACITY', fontsize=6)
+
+    plt.xlabel('Day')
+    plt.ylabel('Jobs In')
+    plt.title("Job Demand")
+    plt.savefig(temp_file)
+    with open(temp_file, 'rb') as image:
+        response = requests.post(discord_webhook,
+                files={filename: image})
+    print('...complete.')
+    return response 
     
-def post_excel_to_discord(df:pd.DataFrame, discord_webhook:str, filename:str='data.xlsx') -> requests.Response:
+def post_util_chart_to_discord(df:pd.DataFrame, discord_webhook:str, current_day:int|None=None) -> requests.Response:
+    '''Posts station utilization charts to Discord webhook, returns requests.Response'''
+    print('Posting station utilization chart to Discord...')
+    filename = f'util-chart-day{current_day}' if current_day else 'util-chart'
+    temp_file = '/tmp/' + filename + '.png'
+    plt.figure(figsize=(5, 2.7), layout='constrained')
+    plt.grid(True)
+    plt.plot(df['DAY'], df[f'S1UTIL']*100, color='green', linewidth=2, label="S1UTIL")
+    plt.plot(df['DAY'], df[f'S2UTIL']*100, color='purple', linewidth=2, label="S2UTIL")
+    plt.plot(df['DAY'], df[f'S3UTIL']*100, color='orange', linewidth=2, label="S3UTIL")
+    plt.legend()
+    plt.xlabel('Day')
+    plt.ylabel('Utilization %')
+    plt.title(f"Station Utilization")
+    plt.savefig(temp_file)
+    with open(temp_file, 'rb') as image:
+        response = requests.post(discord_webhook,
+                files={filename: image})
+    print('...complete.')
+    return response 
+
+def post_excel_to_discord(df:pd.DataFrame, discord_webhook:str, current_day:int|None=None) -> requests.Response:
     '''Posts excel file to Discord webhook, returns requests.Response'''
     print('Posting excel file to Discord...')
-    temp_file = '/tmp/' + filename
+    filename = f'littlefield-day{current_day}' if current_day else 'littlefield'
+    temp_file = '/tmp/' + filename + '.xlsx'
     df.to_excel(temp_file, index=False)
     with open(temp_file, 'rb') as file:
         response = requests.post(discord_webhook,
@@ -252,7 +322,8 @@ def main(request):
     factory_df = scrape_full_data(browser)
     standings_df = scrape_current_standings(browser, current_day)
     daily_settings_df = scrape_daily_settings(browser, current_day)
-    rank = get_team_info(standings_df, group_id)['RANK']
+    team_info = scrape_team_info(standings_df, group_id)
+    rank = team_info['RANK']
 
     # Parse request parameters
     request_json = request.get_json(silent=True)
@@ -263,19 +334,26 @@ def main(request):
     actions = {
         'csv_to_bucket': lambda: csv_to_bucket(factory_df, gcs_bucket),
         'excel_to_bucket': lambda: excel_to_bucket(factory_df, gcs_bucket),
-        'bq_factory': lambda: load_to_bigquery(
+        'bigquery_factory': lambda: load_to_bigquery(
             factory_df, project_id, dataset_name, factory_table
         ),
-        'bq_standings': lambda: load_to_bigquery(
+        'bigquery_standings': lambda: load_to_bigquery(
             standings_df, project_id, dataset_name, standings_table
         ),
-        'bq_settings': lambda: load_to_bigquery(
+        'bigquery_settings': lambda: load_to_bigquery(
             daily_settings_df, project_id, dataset_name, settings_table
         ),
-        'discord_report': lambda: post_report_to_discord(
-            daily_report(factory_df, group_id, rank, request_json.get('avg')), webhook
+        'discord_demand_chart': lambda: post_demand_chart_to_discord(
+            df=factory_df, current_day=current_day, discord_webhook=webhook
         ),
-        'discord_excel': lambda: post_excel_to_discord(factory_df, webhook)
+        'discord_util_chart': lambda: post_util_chart_to_discord(
+            df=factory_df, current_day=current_day, discord_webhook=webhook
+        ),
+        'discord_report': lambda: post_report_to_discord(
+            daily_report(df=factory_df, team_name=group_id, rank=rank, average=request_json.get('avg')), 
+            current_day=current_day, discord_webhook=webhook
+        ),
+        'discord_excel': lambda: post_excel_to_discord(factory_df, webhook, current_day)
     }
     for key, action in actions.items():
         if request_json.get(key):
