@@ -210,13 +210,13 @@ def daily_report(df:pd.DataFrame, team_name:str, rank:int|None=None, average:int
         'Cash':[df.loc[present_day, 'CASH']],
         'Inventory':[df.loc[present_day, 'INV']],
         'Job Demand':[df.loc[present_day, 'JOBIN']],
-        f'Avg ({avg}d) Job Demand':[df.loc[present_day-avg:present_day, 'JOBIN'].mean()],
+        f'^ {avg}d avg':[df.loc[present_day-avg:present_day, 'JOBIN'].mean()],
         'Station 1 Util':f"{round(df.loc[present_day, 'S1UTIL']*100)} %",
-        f'Avg ({avg}d) St 1 Util':f"{round(df.loc[present_day-avg:present_day, 'S1UTIL'].mean()*100)} %",
+        f' ^ {avg}d avg':f"{round(df.loc[present_day-avg:present_day, 'S1UTIL'].mean()*100)} %",
         'Station 2 Util':f"{round(df.loc[present_day, 'S2UTIL']*100)} %",
-        f'Avg ({avg}d) St 2 Util':f"{round(df.loc[present_day-avg:present_day, 'S2UTIL'].mean()*100)} %",
+        f'  ^ {avg}d avg':f"{round(df.loc[present_day-avg:present_day, 'S2UTIL'].mean()*100)} %",
         'Station 3 Util':f"{round(df.loc[present_day, 'S3UTIL']*100)} %",
-        f'Avg ({avg}d) St 3 Util':f"{round(df.loc[present_day-avg:present_day, 'S3UTIL'].mean()*100)} %",
+        f'   ^ {avg}d avg':f"{round(df.loc[present_day-avg:present_day, 'S3UTIL'].mean()*100)} %",
         }, index=[team_name]).transpose()
     report_df = report_df.style.format(precision=0)
     return report_df
@@ -247,28 +247,22 @@ def post_demand_chart_to_discord(df:pd.DataFrame, discord_webhook:str, current_d
     # Add trendline with standard deviation
     z = np.polyfit(df['DAY'], df['JOBIN'], 1)
     p = np.poly1d(z)
-    x = range(1, df['DAY'].max()+22)
+    x = range(1, df['DAY'].max()+25)
     std_dev = np.std(df['JOBIN'])
     plt.plot(x, p(x), color="red", linestyle="--")
     plt.fill_between(x, p(x) - std_dev, p(x) + std_dev, alpha=0.3)
 
     # Add station capacities
     df['JOBOUT'] = df['JOBOUT1'].combine_first(df['JOBOUT2']).combine_first(df['JOBOUT3'])
-    print(df['JOBOUT'].mean())
     avg_jobs_out = df['JOBOUT'].mean()
-    avg_s1_util = df['S1UTIL'].mean()
-    avg_s2_util = df['S2UTIL'].mean()
-    avg_s3_util = df['S3UTIL'].mean()
-    s1_capacity = avg_jobs_out/avg_s1_util
-    s2_capacity = avg_jobs_out/avg_s2_util
-    s3_capacity = avg_jobs_out/avg_s3_util
-    plt.axhline(y=s1_capacity, color='black', linestyle='--', label='S1CAPACITY')
-    plt.axhline(y=s2_capacity, color='gray', linestyle='--', label='S2CAPACITY')
-    plt.axhline(y=s3_capacity, color='silver', linestyle='--', label='S3CAPACITY')
-    plt.text(0, s1_capacity+.1, 'S1CAPACITY', fontsize=6)
-    plt.text(0, s2_capacity+.1, 'S2CAPACITY', fontsize=6)
-    plt.text(0, s3_capacity+.1, 'S3CAPACITY', fontsize=6)
+    colors = ['black', 'gray', 'silver']
+    for i in range(1, 4):
+        avg_util = df[f'S{i}UTIL'].mean()
+        capacity = avg_jobs_out/avg_util
+        plt.axhline(y=capacity, color=colors[i-1], linestyle='--', label=f'S{i}CAPACITY')
+        plt.text(0, capacity+.1, f'S{i}CAPACITY', fontsize=6)
 
+    plt.xlim(0, df['DAY'].max()+25)
     plt.xlabel('Day')
     plt.ylabel('Jobs In')
     plt.title("Job Demand")
@@ -286,9 +280,15 @@ def post_util_chart_to_discord(df:pd.DataFrame, discord_webhook:str, current_day
     temp_file = '/tmp/' + filename + '.png'
     plt.figure(figsize=(5, 2.7), layout='constrained')
     plt.grid(True)
-    plt.plot(df['DAY'], df[f'S1UTIL']*100, color='green', linewidth=2, label="S1UTIL")
-    plt.plot(df['DAY'], df[f'S2UTIL']*100, color='purple', linewidth=2, label="S2UTIL")
-    plt.plot(df['DAY'], df[f'S3UTIL']*100, color='orange', linewidth=2, label="S3UTIL")
+    colors = ['green', 'purple', 'orange']
+    for i in range (1, 4):
+        plt.plot(df['DAY'], df[f'S{i}UTIL']*100, color=colors[i-1], linewidth=2, label=f'S{i}UTIL')
+        z = np.polyfit(df['DAY'], df[f'S{i}UTIL']*100, 1)
+        p = np.poly1d(z)
+        x = range(1, df['DAY'].max()+25)
+        plt.plot(x, p(x), color=colors[i-1], linestyle="--")
+    plt.xlim(0, df['DAY'].max()+25)
+    plt.ylim(-5, 105)
     plt.legend()
     plt.xlabel('Day')
     plt.ylabel('Utilization %')
