@@ -11,3 +11,4 @@ google-cloud-bigquery-storage
 pyarrow
 dataframe_image
 matplotlib
+db_dtypes
