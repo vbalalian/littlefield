@@ -6,7 +6,7 @@
 ## Options:
 #### Save data as a CSV/Excel file to an existing GCS bucket
 #### Load data to an existing BigQuery table
-#### Automatically post snapshot reports to Discord
+#### Automatically post snapshot reports and useful charts to Discord
 
 ## Requirements:
 - Existing Google Cloud Project
@@ -52,6 +52,7 @@ Step 4: Copy the following into the body ('avg' = desired period count for disco
   "discord_report": true,
   "discord_demand_chart": true,
   "discord_util_chart": true,
+  "discord_standings_chart": true,
   "discord_excel": true,
   "avg": 5
 }
