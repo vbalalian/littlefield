@@ -25,7 +25,10 @@ standings_table = 'raw_standings'
 settings_table = 'raw_settings'
 
 # Discord webhook
-webhook = os.getenv('DISCORD_WEBHOOK')
+report_webhook = os.getenv('DISCORD_REPORT_WEBHOOK')
+excel_webhook = os.getenv('DISCORD_EXCEL_WEBHOOK')
+demand_util_webhook = os.getenv('DISCORD_DEMAND_UTIL_WEBHOOK')
+standings_webhook = os.getenv('DISCORD_STANDINGS_WEBHOOK')
 
 def Browser() -> mechanize.Browser:
     '''Returns mechanize.Browser object with set cookiejar'''
@@ -90,13 +93,18 @@ def scrape_full_data(browser:mechanize.Browser) -> pd.DataFrame:
                 continue
 
     df = pd.DataFrame(dataset, dtype=float)
+    
+    # Combine contract category columns
+    for category in contract_categories:
+        df[category] = df[f'{category}1'].combine_first(df[f'{category}2']).combine_first(df[f'{category}3'])
+
     df['DAY'] = df.index+1
     # Move 'DAY' to front
     df = df[ ['DAY'] + [ col for col in df.columns if col != 'DAY' ] ]
     df.index += 1
     return df
 
-def scrape_current_standings(browser:mechanize.Browser, current_day:int) -> pd.DataFrame: ################### ADD TO MAIN
+def scrape_current_standings(browser:mechanize.Browser, current_day:int) -> pd.DataFrame:
     standings_url = 'https://op.responsive.net/Littlefield/Standing'
     standings_soup = BeautifulSoup(browser.open(standings_url), 'lxml')
     table = standings_soup.find('table', {'id': 'standingTable'})
@@ -200,24 +208,44 @@ def load_to_bigquery(df:pd.DataFrame, project:str, dataset:str, table:str):
         result = job.result()
     print(f'Loaded {job.output_rows} rows into {table_id}.')
 
-def daily_report(df:pd.DataFrame, team_name:str, rank:int|None=None, average:int|None=None) -> pd.DataFrame:
+def daily_report(factory_df:pd.DataFrame, settings_df:pd.DataFrame, team_name:str, rank:str|None=None, average:int|None=None) -> pd.DataFrame:
     '''Transforms DataFrame into eye friendly report based on values dict'''
-    present_day = df['DAY'].max()
+    present_day = factory_df['DAY'].max()
     avg = average if average else 5
     rank = rank if rank else 'na'
+
+    # Add station capacities
+    avg_jobs_out = factory_df['JOBOUT'].mean()
+    machines_1 = pd.DataFrame({ # machine counts for days before game start
+        'DAY': [i for i in range(1, 50)],
+        'S1_machines': [1 for _ in range(49)], 
+        'S2_machines': [1 for _ in range(49)], 
+        'S3_machines': [1 for _ in range(49)]
+        })
+    machines_2 = settings_df[['DAY', 'S1_machines', 'S2_machines', 'S3_machines']]
+    machines_all = pd.concat([machines_1, machines_2], ignore_index=True)
+    current_machines = machines_all.loc[machines_all['DAY'] == machines_all['DAY'].max()]
+    capacities, machines = [], []
+    for i in range(1, 4):
+        avg_util = factory_df[f'S{i}UTIL'].mean()
+        avg_capacity = avg_jobs_out/avg_util
+        avg_machine_count = machines_all[f'S{i}_machines'].mean()
+        machines.append(current_machines[f'S{i}_machines'].values[0])
+        Tp = 24/avg_capacity
+        Rp = (avg_machine_count/Tp)*24
+        capacities.append(round(Rp, 2))
+
     report_df = pd.DataFrame({
         'Day':[present_day],
         'Rank': [rank], 
-        'Cash':[df.loc[present_day, 'CASH']],
-        'Inventory':[df.loc[present_day, 'INV']],
-        'Job Demand':[df.loc[present_day, 'JOBIN']],
-        f'^ {avg}d avg':[df.loc[present_day-avg:present_day, 'JOBIN'].mean()],
-        'Station 1 Util':f"{round(df.loc[present_day, 'S1UTIL']*100)} %",
-        f' ^ {avg}d avg':f"{round(df.loc[present_day-avg:present_day, 'S1UTIL'].mean()*100)} %",
-        'Station 2 Util':f"{round(df.loc[present_day, 'S2UTIL']*100)} %",
-        f'  ^ {avg}d avg':f"{round(df.loc[present_day-avg:present_day, 'S2UTIL'].mean()*100)} %",
-        'Station 3 Util':f"{round(df.loc[present_day, 'S3UTIL']*100)} %",
-        f'   ^ {avg}d avg':f"{round(df.loc[present_day-avg:present_day, 'S3UTIL'].mean()*100)} %",
+        'Cash':[factory_df.loc[present_day, 'CASH']],
+        'Inventory':[factory_df.loc[present_day, 'INV']],
+        f'Demand ({avg}d MA)':f"{[factory_df.loc[present_day, 'JOBIN']][0]} ({[factory_df.loc[present_day-avg:present_day, 'JOBIN'].mean()][0]})",
+        f'S1 Util ({avg}d MA)':f"{round(factory_df.loc[present_day, 'S1UTIL']*100)}% ({round(factory_df.loc[present_day-avg:present_day, 'S1UTIL'].mean()*100)}%)",
+        f'S2 Util ({avg}d MA)':f"{round(factory_df.loc[present_day, 'S2UTIL']*100)}% ({round(factory_df.loc[present_day-avg:present_day, 'S2UTIL'].mean()*100)}%)",
+        f'S3 Util ({avg}d MA)':f"{round(factory_df.loc[present_day, 'S3UTIL']*100)}% ({round(factory_df.loc[present_day-avg:present_day, 'S3UTIL'].mean()*100)}%)",
+        'Capacities': f"{capacities[0]}, {capacities[1]}, {capacities[2]}",
+        'Machines': f"{machines[0]}, {machines[1]}, {machines[2]}"
         }, index=[team_name]).transpose()
     report_df = report_df.style.format(precision=0)
     return report_df
@@ -245,7 +273,7 @@ def post_demand_chart_to_discord(factory_df:pd.DataFrame,
     temp_file = '/tmp/' + filename + '.png'
 
     # Plot jobs in
-    plt.figure(figsize=(5, 2.7), layout='constrained')
+    plt.figure(figsize=(6, 4), layout='constrained')
     plt.grid(True)
     plt.plot(factory_df['DAY'], factory_df['JOBIN'], linewidth=2)
 
@@ -258,7 +286,6 @@ def post_demand_chart_to_discord(factory_df:pd.DataFrame,
     plt.fill_between(x, p(x) - std_dev, p(x) + std_dev, alpha=0.3)
 
     # Add station capacities
-    factory_df['JOBOUT'] = factory_df['JOBOUT1'].combine_first(factory_df['JOBOUT2']).combine_first(factory_df['JOBOUT3'])
     avg_jobs_out = factory_df['JOBOUT'].mean()
     machines_1 = pd.DataFrame({ # machine counts for days before game start
         'DAY': [i for i in range(1, 50)],
@@ -280,7 +307,7 @@ def post_demand_chart_to_discord(factory_df:pd.DataFrame,
         plt.axhline(y=Rp, color=colors[i-1], linestyle='--', label=f'S{i}CAPACITY')
         plt.text(0, Rp+.1, f'S{i}CAPACITY', fontsize=6)
 
-    plt.xlim(0, factory_df['DAY'].max()+25)
+    # plt.xlim(0, factory_df['DAY'].max()+25)
     plt.xlabel('Day')
     plt.ylabel('Jobs In')
     plt.title("Job Demand")
@@ -291,21 +318,20 @@ def post_demand_chart_to_discord(factory_df:pd.DataFrame,
     print('...complete.')
     return response 
     
-def post_util_chart_to_discord(factory_df:pd.DataFrame, discord_webhook:str, current_day:int|None=None) -> requests.Response:
+def post_util_chart_to_discord(factory_df:pd.DataFrame, discord_webhook:str, current_day:int|None=None, average:int|None=None) -> requests.Response:
     '''Posts station utilization charts to Discord webhook, returns requests.Response'''
     print('Posting station utilization chart to Discord...')
     filename = f'util-chart-day{current_day}' if current_day else 'util-chart'
     temp_file = '/tmp/' + filename + '.png'
-    plt.figure(figsize=(5, 2.7), layout='constrained')
+    plt.figure(figsize=(6, 4), layout='constrained')
     plt.grid(True)
     colors = ['green', 'purple', 'orange']
+    ma = average if average else 5
     for i in range (1, 4):
-        plt.plot(factory_df['DAY'], factory_df[f'S{i}UTIL']*100, color=colors[i-1], linewidth=2, label=f'S{i}UTIL')
-        z = np.polyfit(factory_df['DAY'], factory_df[f'S{i}UTIL']*100, 1)
-        p = np.poly1d(z)
-        x = range(1, factory_df['DAY'].max()+25)
-        plt.plot(x, p(x), color=colors[i-1], linestyle="--")
-    plt.xlim(0, factory_df['DAY'].max()+25)
+        plt.plot(factory_df['DAY'], factory_df[f'S{i}UTIL']*100, color=colors[i-1], linewidth=3, label=f'S{i}UTIL', alpha=.65)
+        plt.plot(factory_df['DAY'], factory_df[f'S{i}UTIL'].rolling(ma).mean()*100, color=colors[i-1], linestyle="--", label=f'S{i} {ma}p MA')
+
+    # plt.xlim(0, factory_df['DAY'].max()+25)
     plt.ylim(-5, 105)
     plt.legend()
     plt.xlabel('Day')
@@ -418,7 +444,7 @@ def main(request):
     standings_df = scrape_current_standings(browser, current_day)
     daily_settings_df = scrape_daily_settings(browser, current_day)
     team_info = scrape_team_info(standings_df, group_id)
-    rank = team_info['RANK']
+    rank = f"T-{team_info['RANK']}" if standings_df[standings_df['RANK'] == team_info['RANK']].shape[0] > 1 else f"{team_info['RANK']}"
 
     # Parse request parameters
     request_json = request.get_json(silent=True)
@@ -439,20 +465,21 @@ def main(request):
             daily_settings_df, project_id, dataset_name, settings_table
         ),
         'discord_demand_chart': lambda: post_demand_chart_to_discord(
-            factory_df=factory_df, settings_df=daily_settings_df, current_day=current_day, discord_webhook=webhook
+            factory_df=factory_df, settings_df=daily_settings_df, current_day=current_day, discord_webhook=demand_util_webhook
         ),
         'discord_util_chart': lambda: post_util_chart_to_discord(
-            factory_df=factory_df, current_day=current_day, discord_webhook=webhook
+            factory_df=factory_df, current_day=current_day, discord_webhook=demand_util_webhook, average=request_json.get('avg')
         ),
         'discord_standings_chart': lambda: post_standings_chart_to_discord(
-            discord_webhook=webhook, project=project_id, dataset=dataset_name, 
+            discord_webhook=standings_webhook, project=project_id, dataset=dataset_name, 
             table=standings_table, current_day=current_day
         ),
         'discord_report': lambda: post_report_to_discord(
-            daily_report(df=factory_df, team_name=group_id, rank=rank, average=request_json.get('avg')), 
-            current_day=current_day, discord_webhook=webhook
+            daily_report(factory_df=factory_df, settings_df=daily_settings_df, 
+                         team_name=group_id, rank=rank, average=request_json.get('avg')), 
+            current_day=current_day, discord_webhook=report_webhook
         ),
-        'discord_excel': lambda: post_excel_to_discord(factory_df, webhook, current_day)
+        'discord_excel': lambda: post_excel_to_discord(factory_df, excel_webhook, current_day)
     }
     for key, action in actions.items():
         if request_json.get(key):

@@ -24,7 +24,10 @@ Step 1: Create a Google Cloud Function (1st gen) with an HTTP trigger, with the 
 - PROJECT_ID: Google Cloud Project ID
 - DATASET_NAME: Google BigQuery Dataset name
 - GCS_BUCKET: Google Cloud Storage bucket name
-- DISCORD_WEBHOOK: Discord webhook url
+- DISCORD_REPORT_WEBHOOK: Discord webhook url for quick report
+- DISCORD_EXCEL_WEBHOOK: Discord webhook url for updated excel files
+- DISCORD_DEMAND_UTIL_WEBHOOK: Discord webhook url for demand and utilization charts
+- DISCORD_STANDINGS_WEBHOOK: Discord webhook url for standings chart
 
 Step 2: Set runtime to **Python 3.11+** and entry point to **main**
 
