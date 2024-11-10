@@ -24,12 +24,6 @@ factory_table = 'raw_factory'
 standings_table = 'raw_standings'
 settings_table = 'raw_settings'
 
-# Discord webhook
-report_webhook = os.getenv('DISCORD_REPORT_WEBHOOK')
-excel_webhook = os.getenv('DISCORD_EXCEL_WEBHOOK')
-demand_util_webhook = os.getenv('DISCORD_DEMAND_UTIL_WEBHOOK')
-standings_webhook = os.getenv('DISCORD_STANDINGS_WEBHOOK')
-
 def Browser() -> mechanize.Browser:
     '''Returns mechanize.Browser object with set cookiejar'''
     cj = cookielib.CookieJar()
@@ -208,7 +202,31 @@ def load_to_bigquery(df:pd.DataFrame, project:str, dataset:str, table:str):
         result = job.result()
     print(f'Loaded {job.output_rows} rows into {table_id}.')
 
-def daily_report(factory_df:pd.DataFrame, settings_df:pd.DataFrame, team_name:str, rank:str|None=None, average:int|None=None) -> pd.DataFrame:
+def get_settings_historical_data(project:str, dataset:str, table:str):
+
+    client = bigquery.Client()
+
+    # Query to extract the latest two days of standings and cash balance
+    query = f"""
+    SELECT DAY, S1_machines, S2_machines, S3_machines
+    FROM `{project}.{dataset}.{table}`
+    ORDER BY DAY
+    """
+
+    # Execute the query
+    query_job = client.query(query)
+    df = query_job.to_dataframe()
+
+    return df
+
+def daily_report(
+        factory_df:pd.DataFrame, 
+        team_name:str, 
+        project:str,
+        dataset:str,
+        table:str, 
+        rank:str|None=None, 
+        average:int|None=None) -> pd.DataFrame:
     '''Transforms DataFrame into eye friendly report based on values dict'''
     present_day = factory_df['DAY'].max()
     avg = average if average else 5
@@ -222,7 +240,8 @@ def daily_report(factory_df:pd.DataFrame, settings_df:pd.DataFrame, team_name:st
         'S2_machines': [1 for _ in range(49)], 
         'S3_machines': [1 for _ in range(49)]
         })
-    machines_2 = settings_df[['DAY', 'S1_machines', 'S2_machines', 'S3_machines']]
+    
+    machines_2 = get_settings_historical_data(project=project, dataset=dataset, table=table)
     machines_all = pd.concat([machines_1, machines_2], ignore_index=True)
     current_machines = machines_all.loc[machines_all['DAY'] == machines_all['DAY'].max()]
     capacities, machines = [], []
@@ -230,22 +249,30 @@ def daily_report(factory_df:pd.DataFrame, settings_df:pd.DataFrame, team_name:st
         avg_util = factory_df[f'S{i}UTIL'].mean()
         avg_capacity = avg_jobs_out/avg_util
         avg_machine_count = machines_all[f'S{i}_machines'].mean()
-        machines.append(current_machines[f'S{i}_machines'].values[0])
-        Tp = 24/avg_capacity
-        Rp = (avg_machine_count/Tp)*24
-        capacities.append(round(Rp, 2))
+        machine_count = current_machines[f'S{i}_machines'].values[0]
+        machines.append(machine_count)
+        cap_per_machine = avg_capacity/avg_machine_count
+        capacity = cap_per_machine*machine_count
+        # Tp = 24/avg_capacity
+        # Rp = (avg_machine_count/Tp)*24
+        # capacity = Rp * machine_count
+        capacities.append(round(capacity, 2))
 
     report_df = pd.DataFrame({
         'Day':[present_day],
         'Rank': [rank], 
-        'Cash':[factory_df.loc[present_day, 'CASH']],
-        'Inventory':[factory_df.loc[present_day, 'INV']],
-        f'Demand ({avg}d MA)':f"{[factory_df.loc[present_day, 'JOBIN']][0]} ({[factory_df.loc[present_day-avg:present_day, 'JOBIN'].mean()][0]})",
+        'Cash':f"${factory_df.loc[present_day, 'CASH']*1000:,.0f}",
+        'Inventory':f"{factory_df.loc[present_day, 'INV']:,.0f}",
+        f'Demand ({avg}d MA)':f"{round([factory_df.loc[present_day, 'JOBIN']][0])} ({round([factory_df.loc[present_day-avg:present_day, 'JOBIN'].mean()][0], 2)})",
         f'S1 Util ({avg}d MA)':f"{round(factory_df.loc[present_day, 'S1UTIL']*100)}% ({round(factory_df.loc[present_day-avg:present_day, 'S1UTIL'].mean()*100)}%)",
         f'S2 Util ({avg}d MA)':f"{round(factory_df.loc[present_day, 'S2UTIL']*100)}% ({round(factory_df.loc[present_day-avg:present_day, 'S2UTIL'].mean()*100)}%)",
         f'S3 Util ({avg}d MA)':f"{round(factory_df.loc[present_day, 'S3UTIL']*100)}% ({round(factory_df.loc[present_day-avg:present_day, 'S3UTIL'].mean()*100)}%)",
         'Capacities': f"{capacities[0]}, {capacities[1]}, {capacities[2]}",
-        'Machines': f"{machines[0]}, {machines[1]}, {machines[2]}"
+        'Machines': f"{machines[0]}, {machines[1]}, {machines[2]}",
+        'Jobs Out': f"{round(factory_df.loc[present_day, 'JOBOUT'])}",
+        'Avg Lead Time': f"{factory_df.loc[present_day, 'JOBT']}",
+        'Revenue': f"${factory_df.loc[present_day, 'JOBREV']*factory_df.loc[present_day, 'JOBOUT']:,.0f}",
+        'Profit': f"${(factory_df.loc[present_day, 'JOBREV']*factory_df.loc[present_day, 'JOBOUT'])-(factory_df.loc[present_day, 'JOBOUT']*600):,.0f}"
         }, index=[team_name]).transpose()
     report_df = report_df.style.format(precision=0)
     return report_df
@@ -264,10 +291,14 @@ def post_report_to_discord(df:pd.DataFrame, discord_webhook:str, current_day:int
 
 def post_demand_chart_to_discord(factory_df:pd.DataFrame, 
                                  settings_df:pd.DataFrame, 
-                                 discord_webhook:str, 
+                                 discord_webhook:str,
+                                 project:str,
+                                 dataset:str,
+                                 table:str,
                                  current_day:int|None=None
                                  ) -> requests.Response:
     '''Posts job demand chart to Discord webhook, returns requests.Response'''
+
     print('Posting job demand chart to Discord...')
     filename = f'day{current_day}-demand-chart' if current_day else 'demand-chart'
     temp_file = '/tmp/' + filename + '.png'
@@ -293,19 +324,22 @@ def post_demand_chart_to_discord(factory_df:pd.DataFrame,
         'S2_machines': [1 for _ in range(49)], 
         'S3_machines': [1 for _ in range(49)]
         })
-    machines_2 = settings_df[['DAY', 'S1_machines', 'S2_machines', 'S3_machines']]
+    machines_2 = get_settings_historical_data(project=project, dataset=dataset, table=table)
     machines_all = pd.concat([machines_1, machines_2], ignore_index=True)
-    # current_machines = machines_all[machines_all['DAY'] == machines_all['DAY'].max()]
+    current_machines = machines_all[machines_all['DAY'] == machines_all['DAY'].max()]
     colors = ['black', 'gray', 'silver']
     for i in range(1, 4):
         avg_util = factory_df[f'S{i}UTIL'].mean()
         avg_capacity = avg_jobs_out/avg_util
         avg_machine_count = machines_all[f'S{i}_machines'].mean()
-        # machine_count = current_machines[f'S{i}_machines']
-        Tp = 24/avg_capacity
-        Rp = (avg_machine_count/Tp)*24
-        plt.axhline(y=Rp, color=colors[i-1], linestyle='--', label=f'S{i}CAPACITY')
-        plt.text(0, Rp+.1, f'S{i}CAPACITY', fontsize=6)
+        machine_count = current_machines[f'S{i}_machines'].values[0]
+        cap_per_machine = avg_capacity/avg_machine_count
+        capacity = cap_per_machine*machine_count
+        # Tp = 24/avg_capacity
+        # Rp = (avg_machine_count/Tp)*24
+        # capacity = Rp * machine_count
+        plt.axhline(y=capacity, color=colors[i-1], linestyle='--', label=f'S{i}CAPACITY')
+        plt.text((i*12)-12, capacity+.1, f'S{i}CAPACITY', fontsize=6)
 
     # plt.xlim(0, factory_df['DAY'].max()+25)
     plt.xlabel('Day')
@@ -354,10 +388,18 @@ def post_standings_chart_to_discord(discord_webhook:str, project:str, dataset:st
 
     # Query to extract the latest two days of standings and cash balance
     query = f"""
-    SELECT DAY, RANK, TEAM, CASH_BALANCE
-    FROM `{project}.{dataset}.{table}`
-    WHERE DAY IN (SELECT MAX(DAY) FROM `{project}.{dataset}.{table}`)
-    OR DAY IN (SELECT MAX(DAY) - 1 FROM `{project}.{dataset}.{table}`)
+    WITH RankedTeams AS (
+        SELECT 
+            DAY, 
+            TEAM, 
+            CASH_BALANCE,
+            RANK() OVER (PARTITION BY DAY ORDER BY CASH_BALANCE DESC) AS RANK
+        FROM `{project}.{dataset}.{table}`
+        WHERE DAY IN (SELECT MAX(DAY) FROM `{project}.{dataset}.{table}`)
+        OR DAY IN (SELECT MAX(DAY) - 1 FROM `{project}.{dataset}.{table}`)
+    )
+
+    SELECT * FROM RankedTeams
     ORDER BY TEAM, DAY
     """
 
@@ -377,26 +419,35 @@ def post_standings_chart_to_discord(discord_webhook:str, project:str, dataset:st
 
     # Calculate rank changes
     def rank_change(row):
-        if row['RANK_TODAY'] < row['RANK_YESTERDAY']:
-            return f"+{row['RANK_YESTERDAY'] - row['RANK_TODAY']}"
-        elif row['RANK_TODAY'] > row['RANK_YESTERDAY']:
-            return f"-{row['RANK_TODAY'] - row['RANK_YESTERDAY']}"
-        else:
+        try:
+            if row['RANK_TODAY'] < row['RANK_YESTERDAY']:
+                return f"+{row['RANK_YESTERDAY'] - row['RANK_TODAY']}"
+            elif row['RANK_TODAY'] > row['RANK_YESTERDAY']:
+                return f"-{row['RANK_TODAY'] - row['RANK_YESTERDAY']}"
+            else:
+                return "-"
+        except:
             return "-"
 
     pivot_df['RANK_CHANGE'] = pivot_df.apply(rank_change, axis=1)
 
     # Merge with cash balance data
     cash_df = df[df['DAY'] == df['DAY'].max()][['TEAM', 'RANK', 'CASH_BALANCE']]
-    result_df = pivot_df.merge(cash_df, on='TEAM')
+
+    # Identify tied ranks and add a "T-" prefix to the rank where necessary
+    cash_df['TIED_RANK'] = cash_df.duplicated(subset='RANK', keep=False)  # Check for ties
+    cash_df['DISPLAY_RANK'] = cash_df.apply(lambda row: f"T-{row['RANK']}" if row['TIED_RANK'] else str(row['RANK']), axis=1)
+
+    # Merge the cash data back into pivot_df
+    result_df = pivot_df.merge(cash_df[['TEAM', 'RANK', 'CASH_BALANCE', 'DISPLAY_RANK']], on='TEAM')
 
     # Generate colors using a colormap
-    cmap = plt.get_cmap('tab20', len(result_df))  # Get a colormap with distinct colors
-    colors = cmap(range(len(result_df)))  # Assign a color to each team
+    cmap = plt.get_cmap('tab20', len(result_df))
+    colors = cmap(range(len(result_df))) 
 
     # Create horizontal bar chart with cash on x-axis and rank on y-axis
     plt.figure(figsize=(10, 8))
-    plt.barh(result_df['TEAM'] + ' ' + result_df['RANK'].astype(str) + '(' + result_df['RANK_CHANGE'] + ')', result_df['CASH_BALANCE'], color=colors)
+    plt.barh(result_df['TEAM'] + ' ' + result_df['DISPLAY_RANK'] + '(' + result_df['RANK_CHANGE'] + ')', result_df['CASH_BALANCE'], color=colors)
     plt.xlabel('Cash Balance (Millions)')
     plt.ylabel('Team')
     plt.title(f'Team Standings - Day {df["DAY"].max()}')
@@ -407,7 +458,7 @@ def post_standings_chart_to_discord(discord_webhook:str, project:str, dataset:st
     plt.gca().invert_yaxis() 
 
     # Set the x-axis limits
-    plt.xlim(1000000, max(df['CASH_BALANCE'].max()+15000, 2000000))
+    plt.xlim(0, max(df['CASH_BALANCE'].max()+15000, 2000000))
 
     # Format x-ticks in millions
     formatter = mticker.FuncFormatter(lambda x, _: f'{round(float(x/1000000), 2)}M')
@@ -433,10 +484,28 @@ def post_excel_to_discord(df:pd.DataFrame, discord_webhook:str, current_day:int|
     print('...complete.')
     return response
 
+
 def main(request):
     # Connect to Littlefield
     browser = Browser()
     login(class_url, group_id, group_pw, browser)
+
+    # Parse request parameters
+    request_json = request.get_json(silent=True)
+    if not request_json:
+        return 'Invalid JSON payload', 400
+
+    # Discord webhook
+    if request_json.get('test'):
+        report_webhook = os.getenv('TEST_DISCORD_REPORT_WEBHOOK')
+        excel_webhook = os.getenv('TEST_DISCORD_EXCEL_WEBHOOK')
+        demand_util_webhook = os.getenv('TEST_DISCORD_DEMAND_UTIL_WEBHOOK')
+        standings_webhook = os.getenv('TEST_DISCORD_STANDINGS_WEBHOOK')
+    else:
+        report_webhook = os.getenv('DISCORD_REPORT_WEBHOOK')
+        excel_webhook = os.getenv('DISCORD_EXCEL_WEBHOOK')
+        demand_util_webhook = os.getenv('DISCORD_DEMAND_UTIL_WEBHOOK')
+        standings_webhook = os.getenv('DISCORD_STANDINGS_WEBHOOK')
 
     # Scrape Littlefield data
     current_day = scrape_current_day(browser)
@@ -445,11 +514,6 @@ def main(request):
     daily_settings_df = scrape_daily_settings(browser, current_day)
     team_info = scrape_team_info(standings_df, group_id)
     rank = f"T-{team_info['RANK']}" if standings_df[standings_df['RANK'] == team_info['RANK']].shape[0] > 1 else f"{team_info['RANK']}"
-
-    # Parse request parameters
-    request_json = request.get_json(silent=True)
-    if not request_json:
-        return 'Invalid JSON payload', 400
 
     # Load data based on request parameters
     actions = {
@@ -464,8 +528,14 @@ def main(request):
         'bigquery_settings': lambda: load_to_bigquery(
             daily_settings_df, project_id, dataset_name, settings_table
         ),
+        'discord_report': lambda: post_report_to_discord(
+            daily_report(factory_df=factory_df, team_name=group_id, rank=rank, project=project_id, 
+                dataset=dataset_name, table=settings_table, average=request_json.get('avg')), 
+            current_day=current_day, discord_webhook=report_webhook
+        ),
         'discord_demand_chart': lambda: post_demand_chart_to_discord(
-            factory_df=factory_df, settings_df=daily_settings_df, current_day=current_day, discord_webhook=demand_util_webhook
+            factory_df=factory_df, settings_df=daily_settings_df, current_day=current_day, 
+            discord_webhook=demand_util_webhook, project=project_id, dataset=dataset_name, table=settings_table
         ),
         'discord_util_chart': lambda: post_util_chart_to_discord(
             factory_df=factory_df, current_day=current_day, discord_webhook=demand_util_webhook, average=request_json.get('avg')
@@ -473,11 +543,6 @@ def main(request):
         'discord_standings_chart': lambda: post_standings_chart_to_discord(
             discord_webhook=standings_webhook, project=project_id, dataset=dataset_name, 
             table=standings_table, current_day=current_day
-        ),
-        'discord_report': lambda: post_report_to_discord(
-            daily_report(factory_df=factory_df, settings_df=daily_settings_df, 
-                         team_name=group_id, rank=rank, average=request_json.get('avg')), 
-            current_day=current_day, discord_webhook=report_webhook
         ),
         'discord_excel': lambda: post_excel_to_discord(factory_df, excel_webhook, current_day)
     }
