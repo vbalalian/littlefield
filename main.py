@@ -253,9 +253,6 @@ def daily_report(
         machines.append(machine_count)
         cap_per_machine = avg_capacity/avg_machine_count
         capacity = cap_per_machine*machine_count
-        # Tp = 24/avg_capacity
-        # Rp = (avg_machine_count/Tp)*24
-        # capacity = Rp * machine_count
         capacities.append(round(capacity, 2))
 
     report_df = pd.DataFrame({
@@ -294,12 +291,12 @@ def post_demand_chart_to_discord(factory_df:pd.DataFrame,
                                  discord_webhook:str,
                                  project:str,
                                  dataset:str,
-                                 table:str,
-                                 current_day:int|None=None
+                                 table:str
                                  ) -> requests.Response:
     '''Posts job demand chart to Discord webhook, returns requests.Response'''
 
     print('Posting job demand chart to Discord...')
+    current_day = factory_df['DAY'].max()
     filename = f'day{current_day}-demand-chart' if current_day else 'demand-chart'
     temp_file = '/tmp/' + filename + '.png'
 
@@ -309,12 +306,30 @@ def post_demand_chart_to_discord(factory_df:pd.DataFrame,
     plt.plot(factory_df['DAY'], factory_df['JOBIN'], linewidth=2)
 
     # Add trendline with standard deviation
-    z = np.polyfit(factory_df['DAY'], factory_df['JOBIN'], 1)
+    stage_1 = factory_df[factory_df['DAY'] <= 170]
+    z = np.polyfit(stage_1['DAY'], stage_1['JOBIN'], 1)
     p = np.poly1d(z)
-    x = range(1, factory_df['DAY'].max()+25)
-    std_dev = np.std(factory_df['JOBIN'])
-    plt.plot(x, p(x), color="red", linestyle="--")
-    plt.fill_between(x, p(x) - std_dev, p(x) + std_dev, alpha=0.3)
+    std_dev = np.std(stage_1['JOBIN'])
+    ft_end = current_day + 14
+
+    # Trendline before day 170
+    x1 = range(1, min(ft_end, 170) + 1)
+    plt.plot(x1, p(x1), color="red", linestyle="--")
+    plt.fill_between(x1, p(x1) - std_dev, p(x1) + std_dev, color="C0", alpha=0.3)
+
+    # Trendline after day 170
+    if ft_end >= 170:
+        if current_day <= 177:
+            x2 = range(170, ft_end+1)
+            plt.plot(x2, [p(170)] * len(x2), color="red", linestyle="--")
+            plt.fill_between(x2, [p(170) - std_dev] * len(x2), [p(170) + std_dev] * len(x2), color="C0", alpha=0.3)
+        elif current_day > 177:
+            stage_2 = factory_df[factory_df['DAY'] > 170]
+            z2 = np.polyfit(stage_2['DAY'], stage_2['JOBIN'], 1)
+            p2 = np.poly1d(z2)
+            x2 = range(170, min(ft_end, 268))
+            plt.plot(x2, p2(x2), color="red", linestyle="--")
+            plt.fill_between(x2, p2(x2) - std_dev, p2(x2) + std_dev, color="C0", alpha=0.3)
 
     # Add station capacities
     avg_jobs_out = factory_df['JOBOUT'].mean()
@@ -335,9 +350,6 @@ def post_demand_chart_to_discord(factory_df:pd.DataFrame,
         machine_count = current_machines[f'S{i}_machines'].values[0]
         cap_per_machine = avg_capacity/avg_machine_count
         capacity = cap_per_machine*machine_count
-        # Tp = 24/avg_capacity
-        # Rp = (avg_machine_count/Tp)*24
-        # capacity = Rp * machine_count
         plt.axhline(y=capacity, color=colors[i-1], linestyle='--', label=f'S{i}CAPACITY')
         plt.text((i*12)-12, capacity+.1, f'S{i}CAPACITY', fontsize=6)
 
@@ -362,7 +374,7 @@ def post_util_chart_to_discord(factory_df:pd.DataFrame, discord_webhook:str, cur
     colors = ['green', 'purple', 'orange']
     ma = average if average else 5
     for i in range (1, 4):
-        plt.plot(factory_df['DAY'], factory_df[f'S{i}UTIL']*100, color=colors[i-1], linewidth=3, label=f'S{i}UTIL', alpha=.65)
+        plt.plot(factory_df['DAY'], factory_df[f'S{i}UTIL']*100, color=colors[i-1], linewidth=3, label=f'S{i}UTIL', alpha=.40)
         plt.plot(factory_df['DAY'], factory_df[f'S{i}UTIL'].rolling(ma).mean()*100, color=colors[i-1], linestyle="--", label=f'S{i} {ma}p MA')
 
     # plt.xlim(0, factory_df['DAY'].max()+25)
@@ -534,8 +546,8 @@ def main(request):
             current_day=current_day, discord_webhook=report_webhook
         ),
         'discord_demand_chart': lambda: post_demand_chart_to_discord(
-            factory_df=factory_df, settings_df=daily_settings_df, current_day=current_day, 
-            discord_webhook=demand_util_webhook, project=project_id, dataset=dataset_name, table=settings_table
+            factory_df=factory_df, settings_df=daily_settings_df, discord_webhook=demand_util_webhook, 
+            project=project_id, dataset=dataset_name, table=settings_table
         ),
         'discord_util_chart': lambda: post_util_chart_to_discord(
             factory_df=factory_df, current_day=current_day, discord_webhook=demand_util_webhook, average=request_json.get('avg')
