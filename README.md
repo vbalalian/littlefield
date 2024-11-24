@@ -12,7 +12,7 @@
 - Existing Google Cloud Project
 - Existing Google BigQuery dataset
 - Existing Google Cloud Storage bucket
-- Existing Discord Webhook
+- Existing Discord Webhook(s)
 
 ## To Run:
 
