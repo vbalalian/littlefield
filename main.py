@@ -253,6 +253,9 @@ def daily_report(
         machines.append(machine_count)
         cap_per_machine = avg_capacity/avg_machine_count
         capacity = cap_per_machine*machine_count
+        # Tp = 24/avg_capacity
+        # Rp = (avg_machine_count/Tp)*24
+        # capacity = Rp * machine_count
         capacities.append(round(capacity, 2))
 
     report_df = pd.DataFrame({
@@ -291,7 +294,8 @@ def post_demand_chart_to_discord(factory_df:pd.DataFrame,
                                  discord_webhook:str,
                                  project:str,
                                  dataset:str,
-                                 table:str
+                                 table:str,
+                                 inflection_pt:int
                                  ) -> requests.Response:
     '''Posts job demand chart to Discord webhook, returns requests.Response'''
 
@@ -306,28 +310,28 @@ def post_demand_chart_to_discord(factory_df:pd.DataFrame,
     plt.plot(factory_df['DAY'], factory_df['JOBIN'], linewidth=2)
 
     # Add trendline with standard deviation
-    stage_1 = factory_df[factory_df['DAY'] <= 170]
+    stage_1 = factory_df[factory_df['DAY'] <= inflection_pt]
     z = np.polyfit(stage_1['DAY'], stage_1['JOBIN'], 1)
     p = np.poly1d(z)
     std_dev = np.std(stage_1['JOBIN'])
     ft_end = current_day + 14
 
-    # Trendline before day 170
-    x1 = range(1, min(ft_end, 170) + 1)
+    # Trendline before day inflection_pt
+    x1 = range(1, min(ft_end, inflection_pt) + 1)
     plt.plot(x1, p(x1), color="red", linestyle="--")
     plt.fill_between(x1, p(x1) - std_dev, p(x1) + std_dev, color="C0", alpha=0.3)
 
-    # Trendline after day 170
-    if ft_end >= 170:
-        if current_day <= 177:
-            x2 = range(170, ft_end+1)
-            plt.plot(x2, [p(170)] * len(x2), color="red", linestyle="--")
-            plt.fill_between(x2, [p(170) - std_dev] * len(x2), [p(170) + std_dev] * len(x2), color="C0", alpha=0.3)
-        elif current_day > 177:
-            stage_2 = factory_df[factory_df['DAY'] > 170]
+    # Trendline after day inflection_pt
+    if ft_end >= inflection_pt:
+        if current_day <= inflection_pt + 7:
+            x2 = range(inflection_pt, ft_end+1)
+            plt.plot(x2, [p(inflection_pt)] * len(x2), color="red", linestyle="--")
+            plt.fill_between(x2, [p(inflection_pt) - std_dev] * len(x2), [p(inflection_pt) + std_dev] * len(x2), color="C0", alpha=0.3)
+        elif current_day > inflection_pt + 7:
+            stage_2 = factory_df[factory_df['DAY'] > inflection_pt]
             z2 = np.polyfit(stage_2['DAY'], stage_2['JOBIN'], 1)
             p2 = np.poly1d(z2)
-            x2 = range(170, min(ft_end, 268))
+            x2 = range(inflection_pt, min(ft_end, 268))
             plt.plot(x2, p2(x2), color="red", linestyle="--")
             plt.fill_between(x2, p2(x2) - std_dev, p2(x2) + std_dev, color="C0", alpha=0.3)
 
@@ -508,16 +512,10 @@ def main(request):
         return 'Invalid JSON payload', 400
 
     # Discord webhook
-    if request_json.get('test'):
-        report_webhook = os.getenv('TEST_DISCORD_REPORT_WEBHOOK')
-        excel_webhook = os.getenv('TEST_DISCORD_EXCEL_WEBHOOK')
-        demand_util_webhook = os.getenv('TEST_DISCORD_DEMAND_UTIL_WEBHOOK')
-        standings_webhook = os.getenv('TEST_DISCORD_STANDINGS_WEBHOOK')
-    else:
-        report_webhook = os.getenv('DISCORD_REPORT_WEBHOOK')
-        excel_webhook = os.getenv('DISCORD_EXCEL_WEBHOOK')
-        demand_util_webhook = os.getenv('DISCORD_DEMAND_UTIL_WEBHOOK')
-        standings_webhook = os.getenv('DISCORD_STANDINGS_WEBHOOK')
+    report_webhook = os.getenv('DISCORD_REPORT_WEBHOOK')
+    excel_webhook = os.getenv('DISCORD_EXCEL_WEBHOOK')
+    demand_util_webhook = os.getenv('DISCORD_DEMAND_UTIL_WEBHOOK')
+    standings_webhook = os.getenv('DISCORD_STANDINGS_WEBHOOK')
 
     # Scrape Littlefield data
     current_day = scrape_current_day(browser)
@@ -547,7 +545,7 @@ def main(request):
         ),
         'discord_demand_chart': lambda: post_demand_chart_to_discord(
             factory_df=factory_df, settings_df=daily_settings_df, discord_webhook=demand_util_webhook, 
-            project=project_id, dataset=dataset_name, table=settings_table
+            project=project_id, dataset=dataset_name, table=settings_table, inflection_pt=request_json.get('inflection_pt')
         ),
         'discord_util_chart': lambda: post_util_chart_to_discord(
             factory_df=factory_df, current_day=current_day, discord_webhook=demand_util_webhook, average=request_json.get('avg')
