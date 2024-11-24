@@ -3,12 +3,12 @@ beautifulsoup4
 pandas
 numpy
 lxml
-openpyxl
-pytest
-requests
 google-cloud-bigquery
 google-cloud-bigquery-storage
 pyarrow
+gcsfs
+fsspec
 dataframe_image
 matplotlib
+openpyxl
 db_dtypes
