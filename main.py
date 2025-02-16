@@ -17,9 +17,8 @@ group_id = os.getenv('GROUP_ID')
 group_pw = os.getenv('GROUP_PW')
 
 # Google Cloud project info
-project_id = os.getenv('PROJECT_ID')
-dataset_name = os.getenv('DATASET_NAME')
-gcs_bucket = os.getenv('GCS_BUCKET')
+project_id = os.getenv('GCP_PROJECT_ID')
+dataset_name = os.getenv('BIGQUERY_DATASET_NAME')
 factory_table = 'raw_factory'
 standings_table = 'raw_standings'
 settings_table = 'raw_settings'
@@ -71,10 +70,10 @@ def scrape_full_data(browser:mechanize.Browser) -> pd.DataFrame:
         print(f'Scraping {cat}')
         url = "http://op.responsive.net/Littlefield/Plot?data=%s&x=all" % cat
         soup = BeautifulSoup(browser.open(url), "lxml")
-        data = soup.find_all("script")[6].string
+        raw_data = soup.find_all("script")[6].string
         for i in range(3):
             try:
-                data = data.split("\n")[i+4].split("'")[5].split()
+                data = raw_data.split("\n")[i+4].split("'")[5].split()
                 values = []
                 for j in range(len(data)):
                     if j % 2 == 0 and "." not in data[j]:
@@ -82,7 +81,7 @@ def scrape_full_data(browser:mechanize.Browser) -> pd.DataFrame:
                 dataset[cat+str(i+1)] = values
             except:
                 # Fill unused Contract 2/3 columns with NaNs
-                values = [np.nan for _ in range(len(dataset['INV']))]
+                values = [0 for _ in range(len(dataset['INV']))]
                 dataset[cat+str(i+1)] = values
                 continue
 
@@ -90,7 +89,14 @@ def scrape_full_data(browser:mechanize.Browser) -> pd.DataFrame:
     
     # Combine contract category columns
     for category in contract_categories:
-        df[category] = df[f'{category}1'].combine_first(df[f'{category}2']).combine_first(df[f'{category}3'])
+        # Create columns for each contract category
+        df[category] = df[[f"{category}1", f"{category}2", f"{category}3"]].apply(
+            lambda row: (
+                row[row != 0].mean() if category in ["JOBT", "JOBREV"]
+                else row[row != 0].sum()
+            ) if not (row == 0).all() else 0,
+            axis=1
+        )
 
     df['DAY'] = df.index+1
     # Move 'DAY' to front
@@ -169,19 +175,7 @@ def scrape_team_info(standings:pd.DataFrame, team_name:str=group_id):
     if team_name.lower() in teams_list:
         return standings[standings['TEAM'].str.lower() == team_name.lower()].to_dict('records')[0]
     return {}
-
-def csv_to_bucket(df:pd.DataFrame, bucket:str, filename:str='data.csv'):
-    '''Saves DataFrame to csv in GCS bucket'''
-    print(f'Saving CSV file {filename} to bucket {bucket}...')
-    df.to_csv(f'gs://{bucket}/{filename}')
-    print('...complete.')
-
-def excel_to_bucket(df:pd.DataFrame, bucket:str, filename:str='data.xlsx'):
-    '''Saves Dataframe to excel in GCS bucket'''
-    print(f'Writing {filename} to bucket {bucket}...')
-    df.to_excel(f'gs://{bucket}/{filename}', index=False)
-    print('...complete.')
-
+    
 def load_to_bigquery(df:pd.DataFrame, project:str, dataset:str, table:str):
     '''Loads DataFrame into BigQuery table'''
     table_id = f'{project}.{dataset}.{table}'
@@ -202,11 +196,10 @@ def load_to_bigquery(df:pd.DataFrame, project:str, dataset:str, table:str):
         result = job.result()
     print(f'Loaded {job.output_rows} rows into {table_id}.')
 
-def get_settings_historical_data(project:str, dataset:str, table:str):
+def get_machines_historical_data(project:str, dataset:str, table:str):
 
     client = bigquery.Client()
 
-    # Query to extract the latest two days of standings and cash balance
     query = f"""
     SELECT DAY, S1_machines, S2_machines, S3_machines
     FROM `{project}.{dataset}.{table}`
@@ -231,18 +224,21 @@ def daily_report(
     present_day = factory_df['DAY'].max()
     avg = average if average else 5
     rank = rank if rank else 'na'
+    factory_df['DEMAND'] = factory_df['JOBIN'] + factory_df['JOBREJECTS']
 
     # Add station capacities
     avg_jobs_out = factory_df['JOBOUT'].mean()
-    machines_1 = pd.DataFrame({ # machine counts for days before game start
+    machines_after_50 = get_machines_historical_data(project=project, dataset=dataset, table=table)
+    start_s1 = machines_after_50[machines_after_50['DAY']==50]['S1_machines']
+    start_s2 = machines_after_50[machines_after_50['DAY']==50]['S2_machines']
+    start_s3 = machines_after_50[machines_after_50['DAY']==50]['S3_machines']
+    machines_up_to_49 = pd.DataFrame({ # machine counts for days before game start
         'DAY': [i for i in range(1, 50)],
-        'S1_machines': [1 for _ in range(49)], 
-        'S2_machines': [1 for _ in range(49)], 
-        'S3_machines': [1 for _ in range(49)]
+        'S1_machines': [start_s1 for _ in range(49)], 
+        'S2_machines': [start_s2 for _ in range(49)], 
+        'S3_machines': [start_s3 for _ in range(49)]
         })
-    
-    machines_2 = get_settings_historical_data(project=project, dataset=dataset, table=table)
-    machines_all = pd.concat([machines_1, machines_2], ignore_index=True)
+    machines_all = pd.concat([machines_up_to_49, machines_after_50], ignore_index=True)
     current_machines = machines_all.loc[machines_all['DAY'] == machines_all['DAY'].max()]
     capacities, machines = [], []
     for i in range(1, 4):
@@ -253,9 +249,6 @@ def daily_report(
         machines.append(machine_count)
         cap_per_machine = avg_capacity/avg_machine_count
         capacity = cap_per_machine*machine_count
-        # Tp = 24/avg_capacity
-        # Rp = (avg_machine_count/Tp)*24
-        # capacity = Rp * machine_count
         capacities.append(round(capacity, 2))
 
     report_df = pd.DataFrame({
@@ -263,7 +256,7 @@ def daily_report(
         'Rank': [rank], 
         'Cash':f"${factory_df.loc[present_day, 'CASH']*1000:,.0f}",
         'Inventory':f"{factory_df.loc[present_day, 'INV']:,.0f}",
-        f'Demand ({avg}d MA)':f"{round([factory_df.loc[present_day, 'JOBIN']][0])} ({round([factory_df.loc[present_day-avg:present_day, 'JOBIN'].mean()][0], 2)})",
+        f'Demand ({avg}d MA)':f"{round(factory_df.loc[present_day, 'DEMAND'])} ({round([factory_df.loc[present_day-avg:present_day, 'DEMAND'].mean()][0], 2)})",
         f'S1 Util ({avg}d MA)':f"{round(factory_df.loc[present_day, 'S1UTIL']*100)}% ({round(factory_df.loc[present_day-avg:present_day, 'S1UTIL'].mean()*100)}%)",
         f'S2 Util ({avg}d MA)':f"{round(factory_df.loc[present_day, 'S2UTIL']*100)}% ({round(factory_df.loc[present_day-avg:present_day, 'S2UTIL'].mean()*100)}%)",
         f'S3 Util ({avg}d MA)':f"{round(factory_df.loc[present_day, 'S3UTIL']*100)}% ({round(factory_df.loc[present_day-avg:present_day, 'S3UTIL'].mean()*100)}%)",
@@ -289,13 +282,11 @@ def post_report_to_discord(df:pd.DataFrame, discord_webhook:str, current_day:int
     print('...complete.')
     return response
 
-def post_demand_chart_to_discord(factory_df:pd.DataFrame, 
-                                 settings_df:pd.DataFrame, 
+def post_demand_chart_to_discord(factory_df:pd.DataFrame,
                                  discord_webhook:str,
                                  project:str,
                                  dataset:str,
-                                 table:str,
-                                 inflection_pt:int
+                                 table:str
                                  ) -> requests.Response:
     '''Posts job demand chart to Discord webhook, returns requests.Response'''
 
@@ -303,48 +294,36 @@ def post_demand_chart_to_discord(factory_df:pd.DataFrame,
     current_day = factory_df['DAY'].max()
     filename = f'day{current_day}-demand-chart' if current_day else 'demand-chart'
     temp_file = '/tmp/' + filename + '.png'
+    factory_df['DEMAND'] = factory_df['JOBIN'] + factory_df['JOBREJECTS']
 
-    # Plot jobs in
+    # Plot demand and jobs in
     plt.figure(figsize=(6, 4), layout='constrained')
     plt.grid(True)
-    plt.plot(factory_df['DAY'], factory_df['JOBIN'], linewidth=2)
+    plt.plot(factory_df['DAY'], factory_df['DEMAND'], linewidth=2, label='Demand')
+    plt.plot(factory_df['DAY'], factory_df['JOBIN'], linewidth=2, label='Jobs In')
 
     # Add trendline with standard deviation
-    stage_1 = factory_df[factory_df['DAY'] <= inflection_pt]
-    z = np.polyfit(stage_1['DAY'], stage_1['JOBIN'], 1)
+    z = np.polyfit(factory_df['DAY'], factory_df['DEMAND'], 1)
     p = np.poly1d(z)
-    std_dev = np.std(stage_1['JOBIN'])
+    std_dev = np.std(factory_df['DEMAND'])
     ft_end = current_day + 14
-
-    # Trendline before day inflection_pt
-    x1 = range(1, min(ft_end, inflection_pt) + 1)
-    plt.plot(x1, p(x1), color="red", linestyle="--")
-    plt.fill_between(x1, p(x1) - std_dev, p(x1) + std_dev, color="C0", alpha=0.3)
-
-    # Trendline after day inflection_pt
-    if ft_end >= inflection_pt:
-        if current_day <= inflection_pt + 7:
-            x2 = range(inflection_pt, ft_end+1)
-            plt.plot(x2, [p(inflection_pt)] * len(x2), color="red", linestyle="--")
-            plt.fill_between(x2, [p(inflection_pt) - std_dev] * len(x2), [p(inflection_pt) + std_dev] * len(x2), color="C0", alpha=0.3)
-        elif current_day > inflection_pt + 7:
-            stage_2 = factory_df[factory_df['DAY'] > inflection_pt]
-            z2 = np.polyfit(stage_2['DAY'], stage_2['JOBIN'], 1)
-            p2 = np.poly1d(z2)
-            x2 = range(inflection_pt, min(ft_end, 268))
-            plt.plot(x2, p2(x2), color="red", linestyle="--")
-            plt.fill_between(x2, p2(x2) - std_dev, p2(x2) + std_dev, color="C0", alpha=0.3)
+    x = range(1, ft_end + 1)
+    plt.plot(x, p(x), color="red", linestyle="--")
+    plt.fill_between(x, p(x) - std_dev, p(x) + std_dev, color="C0", alpha=0.3)
 
     # Add station capacities
     avg_jobs_out = factory_df['JOBOUT'].mean()
-    machines_1 = pd.DataFrame({ # machine counts for days before game start
+    machines_after_50 = get_machines_historical_data(project=project, dataset=dataset, table=table)
+    start_s1 = machines_after_50[machines_after_50['DAY']==50]['S1_machines']
+    start_s2 = machines_after_50[machines_after_50['DAY']==50]['S2_machines']
+    start_s3 = machines_after_50[machines_after_50['DAY']==50]['S3_machines']
+    machines_up_to_49 = pd.DataFrame({ # machine counts for days before game start
         'DAY': [i for i in range(1, 50)],
-        'S1_machines': [1 for _ in range(49)], 
-        'S2_machines': [1 for _ in range(49)], 
-        'S3_machines': [1 for _ in range(49)]
+        'S1_machines': [start_s1 for _ in range(49)], 
+        'S2_machines': [start_s2 for _ in range(49)], 
+        'S3_machines': [start_s3 for _ in range(49)]
         })
-    machines_2 = get_settings_historical_data(project=project, dataset=dataset, table=table)
-    machines_all = pd.concat([machines_1, machines_2], ignore_index=True)
+    machines_all = pd.concat([machines_up_to_49, machines_after_50], ignore_index=True)
     current_machines = machines_all[machines_all['DAY'] == machines_all['DAY'].max()]
     colors = ['black', 'gray', 'silver']
     for i in range(1, 4):
@@ -354,13 +333,14 @@ def post_demand_chart_to_discord(factory_df:pd.DataFrame,
         machine_count = current_machines[f'S{i}_machines'].values[0]
         cap_per_machine = avg_capacity/avg_machine_count
         capacity = cap_per_machine*machine_count
-        plt.axhline(y=capacity, color=colors[i-1], linestyle='--', label=f'S{i}CAPACITY')
+        plt.axhline(y=capacity, color=colors[i-1], linestyle='--')
         plt.text((i*12)-12, capacity+.1, f'S{i}CAPACITY', fontsize=6)
 
     # plt.xlim(0, factory_df['DAY'].max()+25)
     plt.xlabel('Day')
-    plt.ylabel('Jobs In')
+    plt.ylabel('Number of Jobs')
     plt.title("Job Demand")
+    plt.legend()
     plt.savefig(temp_file)
     with open(temp_file, 'rb') as image:
         response = requests.post(discord_webhook,
@@ -378,7 +358,7 @@ def post_util_chart_to_discord(factory_df:pd.DataFrame, discord_webhook:str, cur
     colors = ['green', 'purple', 'orange']
     ma = average if average else 5
     for i in range (1, 4):
-        plt.plot(factory_df['DAY'], factory_df[f'S{i}UTIL']*100, color=colors[i-1], linewidth=3, label=f'S{i}UTIL', alpha=.40)
+        plt.plot(factory_df['DAY'], factory_df[f'S{i}UTIL']*100, color=colors[i-1], linewidth=3, label=f'S{i}UTIL', alpha=.65)
         plt.plot(factory_df['DAY'], factory_df[f'S{i}UTIL'].rolling(ma).mean()*100, color=colors[i-1], linestyle="--", label=f'S{i} {ma}p MA')
 
     # plt.xlim(0, factory_df['DAY'].max()+25)
@@ -500,7 +480,6 @@ def post_excel_to_discord(df:pd.DataFrame, discord_webhook:str, current_day:int|
     print('...complete.')
     return response
 
-
 def main(request):
     # Connect to Littlefield
     browser = Browser()
@@ -512,10 +491,16 @@ def main(request):
         return 'Invalid JSON payload', 400
 
     # Discord webhook
-    report_webhook = os.getenv('DISCORD_REPORT_WEBHOOK')
-    excel_webhook = os.getenv('DISCORD_EXCEL_WEBHOOK')
-    demand_util_webhook = os.getenv('DISCORD_DEMAND_UTIL_WEBHOOK')
-    standings_webhook = os.getenv('DISCORD_STANDINGS_WEBHOOK')
+    if request_json.get('test'):
+        report_webhook = os.getenv('TEST_DISCORD_REPORT_WEBHOOK')
+        excel_webhook = os.getenv('TEST_DISCORD_EXCEL_WEBHOOK')
+        demand_util_webhook = os.getenv('TEST_DISCORD_DEMAND_UTIL_WEBHOOK')
+        standings_webhook = os.getenv('TEST_DISCORD_STANDINGS_WEBHOOK')
+    else:
+        report_webhook = os.getenv('DISCORD_REPORT_WEBHOOK')
+        excel_webhook = os.getenv('DISCORD_EXCEL_WEBHOOK')
+        demand_util_webhook = os.getenv('DISCORD_DEMAND_UTIL_WEBHOOK')
+        standings_webhook = os.getenv('DISCORD_STANDINGS_WEBHOOK')
 
     # Scrape Littlefield data
     current_day = scrape_current_day(browser)
@@ -527,8 +512,6 @@ def main(request):
 
     # Load data based on request parameters
     actions = {
-        'csv_to_bucket': lambda: csv_to_bucket(factory_df, gcs_bucket),
-        'excel_to_bucket': lambda: excel_to_bucket(factory_df, gcs_bucket),
         'bigquery_factory': lambda: load_to_bigquery(
             factory_df, project_id, dataset_name, factory_table
         ),
@@ -544,8 +527,8 @@ def main(request):
             current_day=current_day, discord_webhook=report_webhook
         ),
         'discord_demand_chart': lambda: post_demand_chart_to_discord(
-            factory_df=factory_df, settings_df=daily_settings_df, discord_webhook=demand_util_webhook, 
-            project=project_id, dataset=dataset_name, table=settings_table, inflection_pt=request_json.get('inflection_pt')
+            factory_df=factory_df, discord_webhook=demand_util_webhook, 
+            project=project_id, dataset=dataset_name, table=settings_table
         ),
         'discord_util_chart': lambda: post_util_chart_to_discord(
             factory_df=factory_df, current_day=current_day, discord_webhook=demand_util_webhook, average=request_json.get('avg')
