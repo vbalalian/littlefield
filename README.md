@@ -1,17 +1,15 @@
 ![image](https://github.com/user-attachments/assets/b127135b-f907-45c1-849b-70dd3ad9e612)
 
 # Littlefield simulation tools
-#### Scrape, save, load, and report data from Littlefield factory simulation, using Google Cloud [Functions](https://cloud.google.com/functions), [Scheduler](https://cloud.google.com/scheduler), [Storage](https://cloud.google.com/storage), and [BigQuery](https://cloud.google.com/bigquery).
+#### Scrape, save, load, and report data from Littlefield factory simulation, using Google Cloud [Functions](https://cloud.google.com/functions), [Scheduler](https://cloud.google.com/scheduler), and [BigQuery](https://cloud.google.com/bigquery).
 
 ## Options:
-#### Save data as a CSV/Excel file to an existing GCS bucket
 #### Load data to an existing BigQuery table
 #### Automatically post snapshot reports and useful charts to Discord
 
 ## Requirements:
 - Existing Google Cloud Project
 - Existing Google BigQuery dataset
-- Existing Google Cloud Storage bucket
 - Existing Discord Webhook(s)
 
 ## To Run:
@@ -21,9 +19,8 @@ Step 1: Create a Google Cloud Function (1st gen) with an HTTP trigger, with the 
 - GROUP_ID: Group/team name
 - GROUP_PW: Group/team password
 - CLASS_URL: Littlefield login page url
-- PROJECT_ID: Google Cloud Project ID
-- DATASET_NAME: Google BigQuery Dataset name
-- GCS_BUCKET: Google Cloud Storage bucket name
+- GCP_PROJECT_ID: Google Cloud Project ID
+- BIGQUERY_DATASET_NAME: Google BigQuery Dataset name
 - DISCORD_REPORT_WEBHOOK: Discord webhook url for quick report
 - DISCORD_EXCEL_WEBHOOK: Discord webhook url for updated excel files
 - DISCORD_DEMAND_UTIL_WEBHOOK: Discord webhook url for demand and utilization charts
@@ -47,8 +44,6 @@ Step 3: Set the Target type to **HTTP** and copy the **Trigger URL** as the exec
 Step 4: Copy the following into the body ('avg' = desired period count for discord report moving averages)
 ```
 {
-  "csv_to_bucket": true,
-  "excel_to_bucket": true,
   "bigquery_factory": true,
   "bigquery_standings": true,
   "bigquery_settings": true,
