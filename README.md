@@ -7,6 +7,16 @@
 #### Load data to an existing BigQuery table
 #### Automatically post snapshot reports and useful charts to Discord
 
+## Examples:
+#### Daily Report:
+![daily_report](https://github.com/user-attachments/assets/83725763-8daf-4999-ba91-2566ed7b88f5)
+#### Demand Chart:
+![demand_chart](https://github.com/user-attachments/assets/29d3dabf-af10-45db-b03a-83c383086e9b)
+#### Utilization Chart:
+![utilization_chart](https://github.com/user-attachments/assets/aa2d0e2c-c337-44c8-9b80-7be046499f2e)
+#### Standings Chart:
+![team_standings](https://github.com/user-attachments/assets/97d1193d-2857-42d2-853b-a3cfbd632b0d)
+
 ## Requirements:
 - Existing Google Cloud Project
 - Existing Google BigQuery dataset
